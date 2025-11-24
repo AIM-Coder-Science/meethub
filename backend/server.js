@@ -10,9 +10,11 @@ const server = http.createServer(app);
 // Configuration CORS pour permettre les connexions depuis votre frontend
 const io = socketIo(server, {
   cors: {
-    origin: "*", // En production, remplacez par votre domaine frontend
-    methods: ["GET", "POST"]
-  }
+    origin: "*",
+    methods: ["GET", "POST"],
+    credentials: true
+  },
+  transports: ['websocket', 'polling']
 });
 
 app.use(cors());
@@ -27,7 +29,8 @@ app.get('/', (req, res) => {
   res.json({ 
     message: 'Serveur de visioconférence actif',
     rooms: rooms.size,
-    users: users.size
+    users: users.size,
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -52,14 +55,20 @@ app.get('/api/room/:roomId', (req, res) => {
 
 // Gestion des connexions Socket.io
 io.on('connection', (socket) => {
-  console.log(`Nouvelle connexion: ${socket.id}`);
+  console.log(`\n=== NOUVELLE CONNEXION ===`);
+  console.log(`Socket ID: ${socket.id}`);
+  console.log(`Heure: ${new Date().toLocaleTimeString()}`);
 
   // Rejoindre une salle
   socket.on('join-room', ({ roomId, userName }) => {
-    console.log(`${userName} rejoint la salle ${roomId}`);
+    console.log(`\n📥 JOIN-ROOM reçu`);
+    console.log(`   User: ${userName}`);
+    console.log(`   Room: ${roomId}`);
+    console.log(`   Socket: ${socket.id}`);
 
     // Créer la salle si elle n'existe pas
     if (!rooms.has(roomId)) {
+      console.log(`   ✨ Création de la salle ${roomId}`);
       rooms.set(roomId, {
         id: roomId,
         participants: new Map(),
@@ -69,6 +78,15 @@ io.on('connection', (socket) => {
 
     const room = rooms.get(roomId);
     
+    // Récupérer les utilisateurs déjà présents AVANT d'ajouter le nouveau
+    const existingUsers = Array.from(room.participants.values()).map(p => ({
+      id: p.id,
+      name: p.name
+    }));
+    
+    console.log(`   👥 Utilisateurs déjà présents: ${existingUsers.length}`);
+    existingUsers.forEach(u => console.log(`      - ${u.name} (${u.id})`));
+
     // Ajouter l'utilisateur à la salle
     const userInfo = {
       id: socket.id,
@@ -81,15 +99,14 @@ io.on('connection', (socket) => {
     
     // Rejoindre la room Socket.io
     socket.join(roomId);
+    console.log(`   ✅ ${userName} a rejoint la salle ${roomId}`);
 
     // Envoyer la liste des participants existants au nouvel arrivant
-    const existingUsers = Array.from(room.participants.values())
-      .filter(p => p.id !== socket.id)
-      .map(p => ({ id: p.id, name: p.name }));
-
+    console.log(`   📤 Envoi de la liste des utilisateurs existants à ${userName}`);
     socket.emit('existing-users', existingUsers);
 
-    // Notifier les autres utilisateurs
+    // Notifier TOUS les autres utilisateurs (sauf celui qui vient de rejoindre)
+    console.log(`   📢 Notification aux autres utilisateurs`);
     socket.to(roomId).emit('user-joined', {
       id: socket.id,
       name: userName
@@ -97,30 +114,41 @@ io.on('connection', (socket) => {
 
     // Envoyer l'historique des messages
     socket.emit('chat-history', room.messages);
+    console.log(`   📜 Historique envoyé: ${room.messages.length} messages`);
 
-    console.log(`Salle ${roomId}: ${room.participants.size} participants`);
+    console.log(`   📊 État de la salle ${roomId}: ${room.participants.size} participants`);
   });
 
   // Signalisation WebRTC - Offre
   socket.on('offer', ({ to, offer }) => {
-    console.log(`Offre de ${socket.id} vers ${to}`);
+    console.log(`\n📨 OFFRE WebRTC`);
+    console.log(`   De: ${socket.id}`);
+    console.log(`   À: ${to}`);
+    
     io.to(to).emit('offer', {
       from: socket.id,
       offer: offer
     });
+    console.log(`   ✅ Offre transmise`);
   });
 
   // Signalisation WebRTC - Réponse
   socket.on('answer', ({ to, answer }) => {
-    console.log(`Réponse de ${socket.id} vers ${to}`);
+    console.log(`\n📨 RÉPONSE WebRTC`);
+    console.log(`   De: ${socket.id}`);
+    console.log(`   À: ${to}`);
+    
     io.to(to).emit('answer', {
       from: socket.id,
       answer: answer
     });
+    console.log(`   ✅ Réponse transmise`);
   });
 
   // Signalisation WebRTC - Candidat ICE
   socket.on('ice-candidate', ({ to, candidate }) => {
+    console.log(`🧊 ICE CANDIDATE: ${socket.id} → ${to}`);
+    
     io.to(to).emit('ice-candidate', {
       from: socket.id,
       candidate: candidate
@@ -129,8 +157,16 @@ io.on('connection', (socket) => {
 
   // Message de chat
   socket.on('chat-message', ({ roomId, message }) => {
+    console.log(`\n💬 MESSAGE CHAT`);
+    console.log(`   Room: ${roomId}`);
+    console.log(`   Texte: ${message}`);
+    console.log(`   De: ${socket.id}`);
+    
     const user = users.get(socket.id);
-    if (!user) return;
+    if (!user) {
+      console.log(`   ❌ Utilisateur non trouvé`);
+      return;
+    }
 
     const chatMessage = {
       id: Date.now(),
@@ -148,14 +184,18 @@ io.on('connection', (socket) => {
       if (room.messages.length > 100) {
         room.messages.shift();
       }
+      console.log(`   💾 Message sauvegardé dans la salle`);
     }
 
-    // Diffuser le message à tous les participants
+    // Diffuser le message à TOUS les participants de la salle (y compris l'expéditeur)
+    console.log(`   📢 Diffusion du message à toute la salle ${roomId}`);
     io.to(roomId).emit('chat-message', chatMessage);
+    console.log(`   ✅ Message diffusé`);
   });
 
   // Toggle vidéo
   socket.on('toggle-video', ({ roomId, isVideoOn }) => {
+    console.log(`📹 TOGGLE VIDEO: ${socket.id} → ${isVideoOn}`);
     socket.to(roomId).emit('user-video-toggle', {
       userId: socket.id,
       isVideoOn
@@ -164,6 +204,7 @@ io.on('connection', (socket) => {
 
   // Toggle audio
   socket.on('toggle-audio', ({ roomId, isAudioOn }) => {
+    console.log(`🎤 TOGGLE AUDIO: ${socket.id} → ${isAudioOn}`);
     socket.to(roomId).emit('user-audio-toggle', {
       userId: socket.id,
       isAudioOn
@@ -172,12 +213,14 @@ io.on('connection', (socket) => {
 
   // Partage d'écran
   socket.on('screen-share-start', ({ roomId }) => {
+    console.log(`🖥️ PARTAGE ÉCRAN DÉMARRÉ: ${socket.id}`);
     socket.to(roomId).emit('user-screen-share-start', {
       userId: socket.id
     });
   });
 
   socket.on('screen-share-stop', ({ roomId }) => {
+    console.log(`🖥️ PARTAGE ÉCRAN ARRÊTÉ: ${socket.id}`);
     socket.to(roomId).emit('user-screen-share-stop', {
       userId: socket.id
     });
@@ -185,7 +228,7 @@ io.on('connection', (socket) => {
 
   // Déconnexion
   socket.on('disconnect', () => {
-    console.log(`Déconnexion: ${socket.id}`);
+    console.log(`\n❌ DÉCONNEXION: ${socket.id}`);
     
     const user = users.get(socket.id);
     if (user) {
@@ -200,13 +243,14 @@ io.on('connection', (socket) => {
           id: socket.id,
           name: name
         });
+        console.log(`   📢 Autres participants notifiés dans ${roomId}`);
 
         // Supprimer la salle si elle est vide
         if (room.participants.size === 0) {
           rooms.delete(roomId);
-          console.log(`Salle ${roomId} supprimée (vide)`);
+          console.log(`   🗑️ Salle ${roomId} supprimée (vide)`);
         } else {
-          console.log(`Salle ${roomId}: ${room.participants.size} participants restants`);
+          console.log(`   📊 Salle ${roomId}: ${room.participants.size} participants restants`);
         }
       }
 
@@ -216,6 +260,8 @@ io.on('connection', (socket) => {
 
   // Quitter une salle
   socket.on('leave-room', ({ roomId }) => {
+    console.log(`\n🚪 LEAVE-ROOM: ${socket.id} quitte ${roomId}`);
+    
     const user = users.get(socket.id);
     if (user && user.roomId === roomId) {
       const room = rooms.get(roomId);
@@ -228,9 +274,11 @@ io.on('connection', (socket) => {
           id: socket.id,
           name: user.name
         });
+        console.log(`   📢 Notification envoyée aux autres participants`);
 
         if (room.participants.size === 0) {
           rooms.delete(roomId);
+          console.log(`   🗑️ Salle supprimée`);
         }
       }
       
@@ -241,16 +289,25 @@ io.on('connection', (socket) => {
 
 // Nettoyage périodique des salles vides (toutes les 5 minutes)
 setInterval(() => {
+  let cleanedCount = 0;
   for (const [roomId, room] of rooms.entries()) {
     if (room.participants.size === 0) {
       rooms.delete(roomId);
-      console.log(`Nettoyage: Salle ${roomId} supprimée`);
+      cleanedCount++;
     }
+  }
+  if (cleanedCount > 0) {
+    console.log(`\n🧹 Nettoyage: ${cleanedCount} salle(s) vide(s) supprimée(s)`);
   }
 }, 5 * 60 * 1000);
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-  console.log(`🚀 Serveur démarré sur le port ${PORT}`);
-  console.log(`📡 WebSocket prêt pour les connexions`);
+  console.log(`\n╔═══════════════════════════════════════╗`);
+  console.log(`║   🚀 SERVEUR MEETHUB PRO DÉMARRÉ     ║`);
+  console.log(`╚═══════════════════════════════════════╝`);
+  console.log(`📡 Port: ${PORT}`);
+  console.log(`🌐 WebSocket: Prêt`);
+  console.log(`⏰ Heure: ${new Date().toLocaleString('fr-FR')}`);
+  console.log(`\n✅ En attente de connexions...\n`);
 });
