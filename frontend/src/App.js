@@ -97,15 +97,30 @@ export default function VideoConferenceApp() {
 
     socketRef.current.on('existing-users', (users) => {
       console.log('👥 Utilisateurs existants:', users);
-      users.forEach(user => {
-        addParticipant(user.id, user.name);
-        setTimeout(() => createPeerConnection(user.id, true), 500);
-      });
+      if (users && users.length > 0) {
+        users.forEach(user => {
+          console.log(`   → Ajout de ${user.name} (${user.id})`);
+          addParticipant(user.id, user.name);
+          // Attendre un peu avant de créer la connexion
+          setTimeout(() => {
+            console.log(`   → Création connexion avec ${user.id}`);
+            createPeerConnection(user.id, true);
+          }, 1000);
+        });
+      } else {
+        console.log('   → Aucun utilisateur existant');
+      }
     });
 
     socketRef.current.on('user-joined', (user) => {
       console.log('✅ Utilisateur rejoint:', user);
+      console.log(`   → ${user.name} (${user.id})`);
       addParticipant(user.id, user.name);
+      // Important : Attendre que l'autre utilisateur soit prêt
+      setTimeout(() => {
+        console.log(`   → Création connexion peer avec ${user.id}`);
+        createPeerConnection(user.id, false);
+      }, 1500);
     });
 
     socketRef.current.on('user-left', (user) => {
