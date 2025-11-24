@@ -3,7 +3,7 @@ import { Video, VideoOff, Mic, MicOff, Phone, PhoneOff, MessageSquare, Users, Mo
 import io from 'socket.io-client';
 
 // IMPORTANT : Remplacez par votre URL Render
-const SOCKET_SERVER_URL = 'https://votre-app.onrender.com';
+const SOCKET_SERVER_URL = 'https://meethub-khyr.onrender.com';
 
 // Configuration ICE servers
 const ICE_SERVERS = {
