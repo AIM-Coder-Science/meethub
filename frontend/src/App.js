@@ -41,6 +41,7 @@ export default function VideoConferenceApp() {
   const [remoteStreams, setRemoteStreams] = useState({});
   const [copied, setCopied] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('Déconnecté');
+  const [hasJoinedRoom, setHasJoinedRoom] = useState(false);
   
   const socketRef = useRef(null);
   const localVideoRef = useRef(null);
@@ -88,6 +89,7 @@ export default function VideoConferenceApp() {
     socketRef.current.on('disconnect', () => {
       console.log('❌ Déconnecté du serveur');
       setConnectionStatus('Déconnecté');
+      setHasJoinedRoom(false);
     });
 
     socketRef.current.on('connect_error', (error) => {
@@ -190,6 +192,12 @@ export default function VideoConferenceApp() {
     socketRef.current.on('chat-history', (messages) => {
       console.log('📜 Historique chat:', messages.length, 'messages');
       setChatMessages(messages);
+    });
+
+    // Confirmation de connexion à la room
+    socketRef.current.on('join-room-confirmation', (data) => {
+      console.log('✅ Confirmation join-room reçue:', data);
+      setHasJoinedRoom(true);
     });
 
     return () => {
@@ -352,6 +360,7 @@ export default function VideoConferenceApp() {
       setParticipants([{ id: 'local', name: userName, isLocal: true, isVideoOn: true, isAudioOn: true }]);
       socketRef.current.emit('join-room', { roomId, userName });
       console.log(`✅ Émission join-room pour ${roomId}`);
+      setHasJoinedRoom(true);
     }
   };
 
@@ -377,6 +386,7 @@ export default function VideoConferenceApp() {
     setChatMessages([]);
     setRemoteStreams({});
     setIsScreenSharing(false);
+    setHasJoinedRoom(false);
   };
 
   // Toggle vidéo
@@ -444,6 +454,11 @@ export default function VideoConferenceApp() {
 
   // Envoyer un message
   const sendMessage = () => {
+    if (!hasJoinedRoom) {
+      console.log('❌ Pas encore joint la room, message ignoré');
+      alert('Veuillez d\'abord rejoindre une salle');
+      return;
+    }
     if (messageInput.trim()) {
       console.log('💬 Envoi message:', messageInput);
       socketRef.current.emit('chat-message', { roomId, message: messageInput });
@@ -934,23 +949,4 @@ export default function VideoConferenceApp() {
             }}
           >
             <MessageSquare style={{ width: '1.5rem', height: '1.5rem' }} />
-          </button>
-
-          <button
-            onClick={leaveRoom}
-            style={{
-              padding: '1rem',
-              borderRadius: '50%',
-              background: '#dc2626',
-              color: 'white',
-              border: 'none',
-              cursor: 'pointer'
-            }}
-          >
-            <PhoneOff style={{ width: '1.5rem', height: '1.5rem' }} />
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+         
