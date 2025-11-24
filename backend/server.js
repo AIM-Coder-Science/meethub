@@ -1,0 +1,256 @@
+// server.js - Serveur de signalisation WebRTC avec Socket.io
+const express = require('express');
+const http = require('http');
+const socketIo = require('socket.io');
+const cors = require('cors');
+
+const app = express();
+const server = http.createServer(app);
+
+// Configuration CORS pour permettre les connexions depuis votre frontend
+const io = socketIo(server, {
+  cors: {
+    origin: "*", // En production, remplacez par votre domaine frontend
+    methods: ["GET", "POST"]
+  }
+});
+
+app.use(cors());
+app.use(express.json());
+
+// Structure pour stocker les salles et les utilisateurs
+const rooms = new Map();
+const users = new Map();
+
+// Route de test
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'Serveur de visioconférence actif',
+    rooms: rooms.size,
+    users: users.size
+  });
+});
+
+// Route pour obtenir les informations d'une salle
+app.get('/api/room/:roomId', (req, res) => {
+  const { roomId } = req.params;
+  const room = rooms.get(roomId);
+  
+  if (room) {
+    res.json({
+      roomId,
+      participants: room.participants.length,
+      users: Array.from(room.participants.values()).map(p => ({
+        id: p.id,
+        name: p.name
+      }))
+    });
+  } else {
+    res.status(404).json({ error: 'Salle non trouvée' });
+  }
+});
+
+// Gestion des connexions Socket.io
+io.on('connection', (socket) => {
+  console.log(`Nouvelle connexion: ${socket.id}`);
+
+  // Rejoindre une salle
+  socket.on('join-room', ({ roomId, userName }) => {
+    console.log(`${userName} rejoint la salle ${roomId}`);
+
+    // Créer la salle si elle n'existe pas
+    if (!rooms.has(roomId)) {
+      rooms.set(roomId, {
+        id: roomId,
+        participants: new Map(),
+        messages: []
+      });
+    }
+
+    const room = rooms.get(roomId);
+    
+    // Ajouter l'utilisateur à la salle
+    const userInfo = {
+      id: socket.id,
+      name: userName,
+      roomId: roomId
+    };
+    
+    room.participants.set(socket.id, userInfo);
+    users.set(socket.id, userInfo);
+    
+    // Rejoindre la room Socket.io
+    socket.join(roomId);
+
+    // Envoyer la liste des participants existants au nouvel arrivant
+    const existingUsers = Array.from(room.participants.values())
+      .filter(p => p.id !== socket.id)
+      .map(p => ({ id: p.id, name: p.name }));
+
+    socket.emit('existing-users', existingUsers);
+
+    // Notifier les autres utilisateurs
+    socket.to(roomId).emit('user-joined', {
+      id: socket.id,
+      name: userName
+    });
+
+    // Envoyer l'historique des messages
+    socket.emit('chat-history', room.messages);
+
+    console.log(`Salle ${roomId}: ${room.participants.size} participants`);
+  });
+
+  // Signalisation WebRTC - Offre
+  socket.on('offer', ({ to, offer }) => {
+    console.log(`Offre de ${socket.id} vers ${to}`);
+    io.to(to).emit('offer', {
+      from: socket.id,
+      offer: offer
+    });
+  });
+
+  // Signalisation WebRTC - Réponse
+  socket.on('answer', ({ to, answer }) => {
+    console.log(`Réponse de ${socket.id} vers ${to}`);
+    io.to(to).emit('answer', {
+      from: socket.id,
+      answer: answer
+    });
+  });
+
+  // Signalisation WebRTC - Candidat ICE
+  socket.on('ice-candidate', ({ to, candidate }) => {
+    io.to(to).emit('ice-candidate', {
+      from: socket.id,
+      candidate: candidate
+    });
+  });
+
+  // Message de chat
+  socket.on('chat-message', ({ roomId, message }) => {
+    const user = users.get(socket.id);
+    if (!user) return;
+
+    const chatMessage = {
+      id: Date.now(),
+      sender: user.name,
+      senderId: socket.id,
+      text: message,
+      time: new Date().toISOString()
+    };
+
+    // Sauvegarder le message dans la salle
+    const room = rooms.get(roomId);
+    if (room) {
+      room.messages.push(chatMessage);
+      // Limiter l'historique à 100 messages
+      if (room.messages.length > 100) {
+        room.messages.shift();
+      }
+    }
+
+    // Diffuser le message à tous les participants
+    io.to(roomId).emit('chat-message', chatMessage);
+  });
+
+  // Toggle vidéo
+  socket.on('toggle-video', ({ roomId, isVideoOn }) => {
+    socket.to(roomId).emit('user-video-toggle', {
+      userId: socket.id,
+      isVideoOn
+    });
+  });
+
+  // Toggle audio
+  socket.on('toggle-audio', ({ roomId, isAudioOn }) => {
+    socket.to(roomId).emit('user-audio-toggle', {
+      userId: socket.id,
+      isAudioOn
+    });
+  });
+
+  // Partage d'écran
+  socket.on('screen-share-start', ({ roomId }) => {
+    socket.to(roomId).emit('user-screen-share-start', {
+      userId: socket.id
+    });
+  });
+
+  socket.on('screen-share-stop', ({ roomId }) => {
+    socket.to(roomId).emit('user-screen-share-stop', {
+      userId: socket.id
+    });
+  });
+
+  // Déconnexion
+  socket.on('disconnect', () => {
+    console.log(`Déconnexion: ${socket.id}`);
+    
+    const user = users.get(socket.id);
+    if (user) {
+      const { roomId, name } = user;
+      const room = rooms.get(roomId);
+
+      if (room) {
+        room.participants.delete(socket.id);
+        
+        // Notifier les autres participants
+        socket.to(roomId).emit('user-left', {
+          id: socket.id,
+          name: name
+        });
+
+        // Supprimer la salle si elle est vide
+        if (room.participants.size === 0) {
+          rooms.delete(roomId);
+          console.log(`Salle ${roomId} supprimée (vide)`);
+        } else {
+          console.log(`Salle ${roomId}: ${room.participants.size} participants restants`);
+        }
+      }
+
+      users.delete(socket.id);
+    }
+  });
+
+  // Quitter une salle
+  socket.on('leave-room', ({ roomId }) => {
+    const user = users.get(socket.id);
+    if (user && user.roomId === roomId) {
+      const room = rooms.get(roomId);
+      
+      if (room) {
+        room.participants.delete(socket.id);
+        socket.leave(roomId);
+        
+        socket.to(roomId).emit('user-left', {
+          id: socket.id,
+          name: user.name
+        });
+
+        if (room.participants.size === 0) {
+          rooms.delete(roomId);
+        }
+      }
+      
+      users.delete(socket.id);
+    }
+  });
+});
+
+// Nettoyage périodique des salles vides (toutes les 5 minutes)
+setInterval(() => {
+  for (const [roomId, room] of rooms.entries()) {
+    if (room.participants.size === 0) {
+      rooms.delete(roomId);
+      console.log(`Nettoyage: Salle ${roomId} supprimée`);
+    }
+  }
+}, 5 * 60 * 1000);
+
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, () => {
+  console.log(`🚀 Serveur démarré sur le port ${PORT}`);
+  console.log(`📡 WebSocket prêt pour les connexions`);
+});
