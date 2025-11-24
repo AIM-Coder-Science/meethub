@@ -949,4 +949,23 @@ export default function VideoConferenceApp() {
             }}
           >
             <MessageSquare style={{ width: '1.5rem', height: '1.5rem' }} />
-         
+          </button>
+
+          <button
+            onClick={leaveRoom}
+            style={{
+              padding: '1rem',
+              borderRadius: '50%',
+              background: '#dc2626',
+              color: 'white',
+              border: 'none',
+              cursor: 'pointer'
+            }}
+          >
+            <PhoneOff style={{ width: '1.5rem', height: '1.5rem' }} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
