@@ -8,22 +8,24 @@ const SOCKET_SERVER_URL = 'https://meethub-khyr.onrender.com';
 // Configuration ICE servers
 const ICE_SERVERS = {
   iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478?transport=udp' },
+    { urls: 'stun:global.stun.twilio.com:3478?transport=tcp' },
     {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
+      urls: 'turn:global.turn.twilio.com:3478?transport=udp',
+      username: process.env.REACT_APP_TWILIO_SID,
+      credential: process.env.REACT_APP_TWILIO_SECRET
     },
     {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
+      urls: 'turn:global.turn.twilio.com:3478?transport=tcp', 
+      username: process.env.REACT_APP_TWILIO_SID,
+      credential: process.env.REACT_APP_TWILIO_SECRET
+    },
+    {
+      urls: 'turns:global.turn.twilio.com:5349?transport=tcp',
+      username: process.env.REACT_APP_TWILIO_SID,
+      credential: process.env.REACT_APP_TWILIO_SECRET
     }
-  ],
-  iceCandidatePoolSize: 10
+  ]
 };
 
 export default function VideoConferenceApp() {
