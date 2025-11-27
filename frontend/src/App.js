@@ -30,21 +30,52 @@ export default function VideoConferenceApp() {
   const remoteVideosRef = useRef({});
   const chatMessagesEndRef = useRef(null);
 
+  // Fonction pour redémarrer ICE
+  const restartIceForPeer = (userId) => {
+    const peer = peersRef.current[userId];
+    if (peer && peer.iceConnectionState === 'failed') {
+      console.log(`🔄 Redémarrage ICE pour ${userId}`);
+      
+      peer.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+        iceRestart: true
+      })
+      .then(offer => peer.setLocalDescription(offer))
+      .then(() => {
+        socketRef.current.emit('offer', {
+          to: userId,
+          offer: peer.localDescription
+        });
+        console.log(`📤 Nouvelle offre ICE envoyée à ${userId}`);
+      })
+      .catch(error => {
+        console.error(`❌ Erreur redémarrage ICE:`, error);
+      });
+    }
+  };
+
   // Récupérer les credentials TURN
   useEffect(() => {
     const fetchTurnCredentials = async () => {
       try {
         const response = await fetch('https://meethub-khyr.onrender.com/api/turn-credentials');
+        if (!response.ok) throw new Error('Serveur indisponible');
+        
         const data = await response.json();
         if (data.iceServers) {
           setIceServers(data.iceServers);
           console.log('✅ Credentials TURN récupérés');
         }
       } catch (error) {
-        console.error('❌ Erreur TURN credentials, utilisation STUN:', error);
+        console.error('❌ Erreur TURN credentials, utilisation STUN publics:', error);
+        // Serveurs STUN publics fiables
         setIceServers([
           { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' }
         ]);
       }
     };
@@ -80,7 +111,7 @@ export default function VideoConferenceApp() {
     };
   }, []);
 
-  // CORRECTION: Initialiser Socket.io avec meilleure gestion WebRTC
+  // Initialiser Socket.io
   useEffect(() => {
     console.log('🔌 Connexion au serveur:', SOCKET_SERVER_URL);
     
@@ -112,7 +143,6 @@ export default function VideoConferenceApp() {
       users.forEach(user => {
         console.log(`➕ Ajout participant: ${user.name} (${user.id})`);
         addParticipant(user.id, user.name);
-        // L'utilisateur qui rejoint crée la connexion (initiateur)
         createPeerConnection(user.id, true);
       });
     });
@@ -120,7 +150,6 @@ export default function VideoConferenceApp() {
     socketRef.current.on('user-joined', (user) => {
       console.log('✅ Utilisateur rejoint:', user);
       addParticipant(user.id, user.name);
-      // L'utilisateur existant crée la connexion (non-initateur)
       createPeerConnection(user.id, false);
     });
 
@@ -138,7 +167,6 @@ export default function VideoConferenceApp() {
       });
     });
 
-    // CORRECTION: Gestion améliorée des offres
     socketRef.current.on('offer', async ({ from, offer }) => {
       console.log('📨 Offre reçue de:', from);
       try {
@@ -176,19 +204,16 @@ export default function VideoConferenceApp() {
       }
     });
 
-    // CORRECTION: Gestion améliorée des candidats ICE
     socketRef.current.on('ice-candidate', async ({ from, candidate }) => {
       console.log('🧊 Candidat ICE reçu de:', from);
       try {
         const peer = peersRef.current[from];
         if (peer) {
-          // Stocker les candidats en attendant la remoteDescription
           if (peer.remoteDescription) {
             await peer.addIceCandidate(new RTCIceCandidate(candidate));
             console.log('✅ Candidat ICE ajouté pour:', from);
           } else {
             console.log('⏳ Candidat ICE en attente de remoteDescription...');
-            // Réessayer après un délai
             setTimeout(async () => {
               if (peer.remoteDescription) {
                 await peer.addIceCandidate(new RTCIceCandidate(candidate));
@@ -219,7 +244,7 @@ export default function VideoConferenceApp() {
     };
   }, []);
 
-  // CORRECTION: Création connexion peer améliorée
+  // Créer une connexion peer
   const createPeerConnection = async (userId, isInitiator) => {
     console.log(`🔗 Création connexion avec ${userId} (initiateur: ${isInitiator})`);
     
@@ -228,7 +253,8 @@ export default function VideoConferenceApp() {
         iceServers: iceServers.length > 0 ? iceServers : [
           { urls: 'stun:stun.l.google.com:19302' }
         ],
-        iceCandidatePoolSize: 10
+        iceCandidatePoolSize: 10,
+        iceTransportPolicy: 'all'
       };
       
       const peer = new RTCPeerConnection(configuration);
@@ -242,7 +268,7 @@ export default function VideoConferenceApp() {
         });
       }
 
-      // CORRECTION: Gestion améliorée des tracks distants
+      // Gestion des tracks distants
       peer.ontrack = (event) => {
         console.log(`🎬 Track reçu de ${userId}:`, event.track.kind);
         const stream = event.streams[0];
@@ -253,7 +279,6 @@ export default function VideoConferenceApp() {
             [userId]: stream
           }));
 
-          // Mettre à jour la vidéo avec un délai
           setTimeout(() => {
             const videoElement = remoteVideosRef.current[userId];
             if (videoElement && stream) {
@@ -280,14 +305,23 @@ export default function VideoConferenceApp() {
         console.log(`🔄 État connexion ${userId}:`, peer.connectionState);
         if (peer.connectionState === 'connected') {
           console.log(`🎉 Connexion établie avec ${userId}`);
+        } else if (peer.connectionState === 'failed') {
+          console.log(`❌ Connexion échouée avec ${userId}`);
         }
       };
 
       peer.oniceconnectionstatechange = () => {
         console.log(`🧊 État ICE ${userId}:`, peer.iceConnectionState);
+        
+        if (peer.iceConnectionState === 'failed') {
+          console.log(`❌ ICE échoué pour ${userId}, tentative de redémarrage...`);
+          setTimeout(() => restartIceForPeer(userId), 2000);
+        } else if (peer.iceConnectionState === 'connected') {
+          console.log(`✅ ICE connecté avec ${userId}`);
+        }
       };
 
-      // CORRECTION: Logique initiateur améliorée
+      // Logique initiateur
       if (isInitiator) {
         try {
           console.log(`🎯 Création offre pour ${userId}`);
@@ -471,7 +505,6 @@ export default function VideoConferenceApp() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // [RESTE DU CODE IDENTIQUE - interface utilisateur]
   // Page de connexion
   if (!isInRoom) {
     return (
