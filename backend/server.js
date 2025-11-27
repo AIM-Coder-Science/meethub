@@ -53,6 +53,51 @@ app.get('/api/room/:roomId', (req, res) => {
   }
 });
 
+// Route pour générer les tokens Twilio TURN sécurisés
+app.get('/api/turn-credentials', (req, res) => {
+  console.log('🔐 Demande de credentials TURN reçue');
+  
+  // Ces variables sont SÉCURISÉES côté serveur
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  
+  if (!accountSid || !authToken) {
+    console.log('❌ Twilio non configuré - variables d\'environnement manquantes');
+    return res.status(500).json({ 
+      error: 'Configuration TURN non disponible',
+      fallback: true
+    });
+  }
+
+  console.log('✅ Génération des credentials TURN Twilio');
+
+  // Générer les credentials Twilio
+  const credentials = {
+    iceServers: [
+      { urls: 'stun:global.stun.twilio.com:3478?transport=udp' },
+      { urls: 'stun:global.stun.twilio.com:3478?transport=tcp' },
+      {
+        urls: 'turn:global.turn.twilio.com:3478?transport=udp',
+        username: accountSid,
+        credential: authToken
+      },
+      {
+        urls: 'turn:global.turn.twilio.com:3478?transport=tcp',
+        username: accountSid,
+        credential: authToken
+      },
+      {
+        urls: 'turns:global.turn.twilio.com:5349?transport=tcp',
+        username: accountSid,
+        credential: authToken
+      }
+    ]
+  };
+
+  console.log('✅ Credentials TURN générés avec succès');
+  res.json(credentials);
+});
+
 // Gestion des connexions Socket.io
 io.on('connection', (socket) => {
   console.log(`\n=== NOUVELLE CONNEXION ===`);
@@ -115,6 +160,15 @@ io.on('connection', (socket) => {
     // Envoyer l'historique des messages
     socket.emit('chat-history', room.messages);
     console.log(`   📜 Historique envoyé: ${room.messages.length} messages`);
+
+    // Confirmation de connexion à la room
+    socket.emit('join-room-confirmation', {
+      roomId,
+      userName,
+      success: true,
+      timestamp: new Date().toISOString()
+    });
+    console.log(`   ✅ Confirmation join-room envoyée`);
 
     console.log(`   📊 État de la salle ${roomId}: ${room.participants.size} participants`);
   });
@@ -308,6 +362,7 @@ server.listen(PORT, () => {
   console.log(`╚═══════════════════════════════════════╝`);
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌐 WebSocket: Prêt`);
+  console.log(`🔐 TURN: ${process.env.TWILIO_ACCOUNT_SID ? 'Configuré' : 'Non configuré'}`);
   console.log(`⏰ Heure: ${new Date().toLocaleString('fr-FR')}`);
   console.log(`\n✅ En attente de connexions...\n`);
 });
