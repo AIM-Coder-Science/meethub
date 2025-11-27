@@ -25,7 +25,9 @@ const ICE_SERVERS = {
       username: process.env.REACT_APP_TWILIO_SID,
       credential: process.env.REACT_APP_TWILIO_SECRET
     }
-  ]
+  ],
+   iceTransportPolicy: 'all',
+  iceCandidatePoolSize: 10
 };
 
 export default function VideoConferenceApp() {
@@ -311,38 +313,40 @@ export default function VideoConferenceApp() {
 
   // Démarrer le flux vidéo local
   const startLocalStream = async () => {
-    try {
-      console.log('🎥 Demande d\'accès média...');
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          facingMode: 'user'
-        },
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
-      
-      localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
+  try {
+    console.log('🎥 Vérification permissions média...');
+    
+    // Vérifier d'abord les permissions
+    const permissions = await navigator.permissions.query({ name: 'camera' });
+    console.log('Permission caméra:', permissions.state);
+    
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width: { ideal: 640 }, // Réduire la résolution pour tests
+        height: { ideal: 480 },
+        frameRate: { ideal: 30 }
+      },
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1 // Mono pour plus de stabilité
       }
-      
-      console.log('✅ Flux local démarré:', {
-        video: stream.getVideoTracks().length,
-        audio: stream.getAudioTracks().length
-      });
-      
-      return true;
-    } catch (error) {
-      console.error('❌ Erreur accès média:', error);
-      alert('Impossible d\'accéder à la caméra/micro. Vérifiez les permissions.');
-      return false;
-    }
-  };
+    });
+    
+    console.log('✅ Stream obtenu - Vidéo:', stream.getVideoTracks().length, 'Audio:', stream.getAudioTracks().length);
+    
+    // Vérifier chaque track
+    stream.getTracks().forEach(track => {
+      console.log(`Track ${track.kind}:`, track.readyState, track.enabled);
+    });
+    
+    return stream;
+  } catch (error) {
+    console.error('❌ Erreur média:', error);
+    return null;
+  }
+};
 
   // Rejoindre une salle
   const joinRoom = async () => {
