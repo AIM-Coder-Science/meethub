@@ -791,61 +791,78 @@ export default function VideoConferenceApp() {
               </button>
             </div>
 
-            {showChat && (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: 'calc(100vh - 200px)' }}>
-                  {chatMessages.map((msg) => (
-                    <div key={msg.id} style={{
-                      background: '#374151',
-                      borderRadius: '0.5rem',
-                      padding: '0.75rem'
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
-                        <span style={{ fontSize: '0.875rem', fontWeight: '500', color: '#60a5fa' }}>{msg.sender}</span>
-                        <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
-                          {new Date(msg.time).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-                        </span>
-                      </div>
-                      <p style={{ fontSize: '0.875rem', color: '#e5e7eb' }}>{msg.text}</p>
-                    </div>
-                  ))}
-                </div>
-                <div style={{ padding: '1rem', borderTop: '1px solid #374151' }}>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <input
-                      type="text"
-                      value={messageInput}
-                      onChange={(e) => setMessageInput(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                      placeholder="Écrivez un message..."
-                      style={{
-                        flex: 1,
-                        padding: '0.5rem 0.75rem',
-                        background: '#374151',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '0.5rem',
-                        outline: 'none'
-                      }}
-                    />
-                    <button
-                      onClick={sendMessage}
-                      style={{
-                        padding: '0.5rem 1rem',
-                        background: '#2563eb',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '0.5rem',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Envoyer
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
+      {showChat && (
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+    {/* Zone des messages avec scroll */}
+    <div style={{ 
+      flex: 1, 
+      overflowY: 'auto', 
+      padding: '1rem', 
+      display: 'flex', 
+      flexDirection: 'column', 
+      gap: '0.75rem',
+      minHeight: 0 // ← IMPORTANT pour le scroll
+    }}>
+      {chatMessages.map((msg) => (
+        <div key={msg.id} style={{
+          background: '#374151',
+          borderRadius: '0.5rem',
+          padding: '0.75rem',
+          flexShrink: 0 // ← Empêche la compression des messages
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+            <span style={{ fontSize: '0.875rem', fontWeight: '500', color: '#60a5fa' }}>{msg.sender}</span>
+            <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
+              {new Date(msg.time).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          </div>
+          <p style={{ fontSize: '0.875rem', color: '#e5e7eb', margin: 0, wordBreak: 'break-word' }}>
+            {msg.text}
+          </p>
+        </div>
+      ))}
+    </div>
+    
+    {/* Input message (toujours en bas) */}
+    <div style={{ 
+      padding: '1rem', 
+      borderTop: '1px solid #374151',
+      flexShrink: 0 // ← Garde l'input fixe en bas
+    }}>
+      <div style={{ display: 'flex', gap: '0.5rem' }}>
+        <input
+          type="text"
+          value={messageInput}
+          onChange={(e) => setMessageInput(e.target.value)}
+          onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+          placeholder="Écrivez un message..."
+          style={{
+            flex: 1,
+            padding: '0.5rem 0.75rem',
+            background: '#374151',
+            color: 'white',
+            border: 'none',
+            borderRadius: '0.5rem',
+            outline: 'none'
+          }}
+        />
+        <button
+          onClick={sendMessage}
+          style={{
+            padding: '0.5rem 1rem',
+            background: '#2563eb',
+            color: 'white',
+            border: 'none',
+            borderRadius: '0.5rem',
+            cursor: 'pointer'
+          }}
+        >
+          Envoyer
+        </button>
+      </div>
+    </div>
+  </div>
+)}
             {showParticipants && (
               <div style={{ flex: 1, overflowY: 'auto', padding: '1rem' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
