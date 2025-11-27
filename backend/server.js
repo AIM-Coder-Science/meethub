@@ -63,66 +63,120 @@ app.get('/api/room/:roomId', (req, res) => {
   }
 });
 
-// Route de diagnostic Metered TURN
+// Route de diagnostic TURN
 app.get('/api/debug-turn', (req, res) => {
   const apiKey = process.env.METERED_API_KEY;
   
   res.json({
     meteredConfigured: !!apiKey,
     apiKeyPresent: !!apiKey,
-    apiKeyLength: apiKey ? apiKey.length : 0
+    apiKeyLength: apiKey ? apiKey.length : 0,
+    directConfig: {
+      stun: 'stun:stun.relay.metered.ca:80',
+      turn: 'turn:global.relay.metered.ca:80',
+      username: 'd4682bb48701b55009b58f1c',
+      credentialLength: 'Ujx2pj32ryDG3G1R'.length
+    }
   });
 });
 
-// Route pour récupérer les credentials TURN depuis Metered API
-app.get('/api/turn-credentials', async (req, res) => {
-  console.log('🔐 Demande de credentials TURN Metered reçue');
-  
-  const apiKey = process.env.METERED_API_KEY;
-  
-  if (!apiKey) {
-    console.log('❌ Metered non configuré - API key manquante');
-    return res.json({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' }
-      ]
-    });
-  }
-
+// Route de diagnostic détaillé TURN
+app.get('/api/debug-turn-detailed', async (req, res) => {
   try {
-    console.log('🔄 Récupération des credentials TURN depuis Metered API...');
+    const apiKey = process.env.METERED_API_KEY;
+    console.log('🔍 Debug TURN détaillé');
     
-    const response = await fetch(`https://meethub.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`);
-    
-    if (!response.ok) {
-      throw new Error(`Erreur API Metered: ${response.status} ${response.statusText}`);
+    // Test de l'API Metered
+    let meteredResponse = null;
+    let meteredError = null;
+    if (apiKey) {
+      try {
+        const response = await fetch(`https://meethub.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`);
+        if (response.ok) {
+          meteredResponse = await response.json();
+          console.log('✅ Réponse Metered API:', meteredResponse);
+        } else {
+          meteredError = `HTTP ${response.status}: ${response.statusText}`;
+          console.log('❌ Erreur API Metered:', meteredError);
+        }
+      } catch (error) {
+        meteredError = error.message;
+        console.log('❌ Erreur API Metered:', error.message);
+      }
     }
     
-    const iceServers = await response.json();
-    
-    console.log('✅ Credentials TURN Metered récupérés avec succès');
-    console.log(`   Nombre de serveurs: ${iceServers.length}`);
-    
-    res.json({ iceServers });
-    
-  } catch (error) {
-    console.error('❌ Erreur lors de la récupération des credentials TURN:', error);
-    
-    // Fallback vers les serveurs STUN publics en cas d'erreur
     res.json({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' }
-      ]
+      meteredConfigured: !!apiKey,
+      apiKeyPresent: !!apiKey,
+      apiKey: apiKey ? `${apiKey.substring(0, 10)}...` : 'Non configuré',
+      meteredApiResponse: meteredResponse,
+      meteredApiError: meteredError,
+      directConfig: {
+        stun: 'stun:stun.relay.metered.ca:80',
+        turn: 'turn:global.relay.metered.ca:80',
+        username: 'd4682bb48701b55009b58f1c',
+        credentialLength: 'Ujx2pj32ryDG3G1R'.length,
+        services: [
+          'stun:stun.relay.metered.ca:80',
+          'turn:global.relay.metered.ca:80',
+          'turn:global.relay.metered.ca:80?transport=tcp',
+          'turn:global.relay.metered.ca:443',
+          'turns:global.relay.metered.ca:443?transport=tcp'
+        ]
+      }
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
+});
+
+// Route pour générer les credentials TURN - VERSION CORRIGÉE AVEC CONFIGURATION DIRECTE
+app.get('/api/turn-credentials', (req, res) => {
+  console.log('🔐 Demande de credentials TURN reçue');
+  
+  // CONFIGURATION DIRECTE avec vos credentials Metered
+  const credentials = {
+    iceServers: [
+      // STUN servers Metered
+      { urls: 'stun:stun.relay.metered.ca:80' },
+      
+      // TURN servers Metered avec vos credentials
+      { 
+        urls: 'turn:global.relay.metered.ca:80',
+        username: 'd4682bb48701b55009b58f1c',
+        credential: 'Ujx2pj32ryDG3G1R'
+      },
+      { 
+        urls: 'turn:global.relay.metered.ca:80?transport=tcp',
+        username: 'd4682bb48701b55009b58f1c',
+        credential: 'Ujx2pj32ryDG3G1R'
+      },
+      { 
+        urls: 'turn:global.relay.metered.ca:443',
+        username: 'd4682bb48701b55009b58f1c',
+        credential: 'Ujx2pj32ryDG3G1R'
+      },
+      { 
+        urls: 'turns:global.relay.metered.ca:443?transport=tcp',
+        username: 'd4682bb48701b55009b58f1c',
+        credential: 'Ujx2pj32ryDG3G1R'
+      },
+      
+      // STUN publics supplémentaires en fallback
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' }
+    ]
+  };
+
+  console.log('✅ Credentials TURN générés avec configuration directe Metered');
+  console.log(`   Nombre de serveurs ICE: ${credentials.iceServers.length}`);
+  console.log(`   STUN Metered: stun:stun.relay.metered.ca:80`);
+  console.log(`   TURN Metered: 4 serveurs avec credentials directs`);
+  
+  res.json(credentials);
 });
 
 // Gestion des connexions Socket.io
@@ -504,7 +558,7 @@ server.listen(PORT, () => {
   console.log(`╚═══════════════════════════════════════╝`);
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌐 WebSocket: Prêt`);
-  console.log(`🔐 TURN: ${process.env.METERED_API_KEY ? 'Metered Configuré' : 'Non configuré'}`);
+  console.log(`🔐 TURN: Configuration directe Metered`);
   console.log(`⏰ Heure: ${new Date().toLocaleString('fr-FR')}`);
   console.log(`\n✅ En attente de connexions...\n`);
 });
