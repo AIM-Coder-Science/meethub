@@ -809,7 +809,8 @@ export default function VideoConferenceApp() {
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '0.75rem',
-                  minHeight: 0
+                  minHeight: 0,
+                  maxHeight: '100%'
                 }}>
                   {chatMessages.map((msg) => (
                     <div key={msg.id} style={{
