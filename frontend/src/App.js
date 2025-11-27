@@ -80,7 +80,7 @@ export default function VideoConferenceApp() {
     };
   }, []);
 
-  // Initialiser Socket.io
+  // CORRECTION: Initialiser Socket.io avec meilleure gestion WebRTC
   useEffect(() => {
     console.log('🔌 Connexion au serveur:', SOCKET_SERVER_URL);
     
@@ -112,6 +112,7 @@ export default function VideoConferenceApp() {
       users.forEach(user => {
         console.log(`➕ Ajout participant: ${user.name} (${user.id})`);
         addParticipant(user.id, user.name);
+        // L'utilisateur qui rejoint crée la connexion (initiateur)
         createPeerConnection(user.id, true);
       });
     });
@@ -119,6 +120,7 @@ export default function VideoConferenceApp() {
     socketRef.current.on('user-joined', (user) => {
       console.log('✅ Utilisateur rejoint:', user);
       addParticipant(user.id, user.name);
+      // L'utilisateur existant crée la connexion (non-initateur)
       createPeerConnection(user.id, false);
     });
 
@@ -136,15 +138,18 @@ export default function VideoConferenceApp() {
       });
     });
 
+    // CORRECTION: Gestion améliorée des offres
     socketRef.current.on('offer', async ({ from, offer }) => {
       console.log('📨 Offre reçue de:', from);
       try {
-        if (!peersRef.current[from]) {
+        let peer = peersRef.current[from];
+        
+        if (!peer) {
           console.log(`🆕 Création nouvelle connexion pour ${from}`);
-          await createPeerConnection(from, false);
+          peer = await createPeerConnection(from, false);
         }
-        const peer = peersRef.current[from];
-        if (peer && peer.signalingState !== 'stable') {
+        
+        if (peer) {
           await peer.setRemoteDescription(new RTCSessionDescription(offer));
           console.log('✅ Description distante définie');
           
@@ -162,7 +167,7 @@ export default function VideoConferenceApp() {
       console.log('📨 Réponse reçue de:', from);
       try {
         const peer = peersRef.current[from];
-        if (peer && peer.signalingState === 'have-local-offer') {
+        if (peer) {
           await peer.setRemoteDescription(new RTCSessionDescription(answer));
           console.log('✅ Réponse traitée pour:', from);
         }
@@ -171,13 +176,26 @@ export default function VideoConferenceApp() {
       }
     });
 
+    // CORRECTION: Gestion améliorée des candidats ICE
     socketRef.current.on('ice-candidate', async ({ from, candidate }) => {
       console.log('🧊 Candidat ICE reçu de:', from);
       try {
         const peer = peersRef.current[from];
-        if (peer && candidate) {
-          await peer.addIceCandidate(new RTCIceCandidate(candidate));
-          console.log('✅ Candidat ICE ajouté pour:', from);
+        if (peer) {
+          // Stocker les candidats en attendant la remoteDescription
+          if (peer.remoteDescription) {
+            await peer.addIceCandidate(new RTCIceCandidate(candidate));
+            console.log('✅ Candidat ICE ajouté pour:', from);
+          } else {
+            console.log('⏳ Candidat ICE en attente de remoteDescription...');
+            // Réessayer après un délai
+            setTimeout(async () => {
+              if (peer.remoteDescription) {
+                await peer.addIceCandidate(new RTCIceCandidate(candidate));
+                console.log('✅ Candidat ICE ajouté (retry) pour:', from);
+              }
+            }, 1000);
+          }
         }
       } catch (error) {
         console.error('❌ Erreur ajout candidat ICE:', error);
@@ -201,7 +219,7 @@ export default function VideoConferenceApp() {
     };
   }, []);
 
-  // Créer une connexion peer
+  // CORRECTION: Création connexion peer améliorée
   const createPeerConnection = async (userId, isInitiator) => {
     console.log(`🔗 Création connexion avec ${userId} (initiateur: ${isInitiator})`);
     
@@ -209,12 +227,14 @@ export default function VideoConferenceApp() {
       const configuration = {
         iceServers: iceServers.length > 0 ? iceServers : [
           { urls: 'stun:stun.l.google.com:19302' }
-        ]
+        ],
+        iceCandidatePoolSize: 10
       };
       
       const peer = new RTCPeerConnection(configuration);
       peersRef.current[userId] = peer;
 
+      // Ajouter les tracks locaux
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(track => {
           peer.addTrack(track, localStreamRef.current);
@@ -222,6 +242,7 @@ export default function VideoConferenceApp() {
         });
       }
 
+      // CORRECTION: Gestion améliorée des tracks distants
       peer.ontrack = (event) => {
         console.log(`🎬 Track reçu de ${userId}:`, event.track.kind);
         const stream = event.streams[0];
@@ -232,17 +253,21 @@ export default function VideoConferenceApp() {
             [userId]: stream
           }));
 
+          // Mettre à jour la vidéo avec un délai
           setTimeout(() => {
-            if (remoteVideosRef.current[userId]) {
-              remoteVideosRef.current[userId].srcObject = stream;
+            const videoElement = remoteVideosRef.current[userId];
+            if (videoElement && stream) {
+              videoElement.srcObject = stream;
               console.log(`✅ Stream assigné à ${userId}`);
             }
-          }, 100);
+          }, 500);
         }
       };
 
+      // Candidats ICE
       peer.onicecandidate = (event) => {
         if (event.candidate) {
+          console.log(`🧊 Envoi candidat ICE à ${userId}`);
           socketRef.current.emit('ice-candidate', {
             to: userId,
             candidate: event.candidate
@@ -250,18 +275,26 @@ export default function VideoConferenceApp() {
         }
       };
 
+      // États de connexion
       peer.onconnectionstatechange = () => {
-        console.log(`🔄 État ${userId}:`, peer.connectionState);
+        console.log(`🔄 État connexion ${userId}:`, peer.connectionState);
+        if (peer.connectionState === 'connected') {
+          console.log(`🎉 Connexion établie avec ${userId}`);
+        }
       };
 
       peer.oniceconnectionstatechange = () => {
-        console.log(`🧊 ICE ${userId}:`, peer.iceConnectionState);
+        console.log(`🧊 État ICE ${userId}:`, peer.iceConnectionState);
       };
 
+      // CORRECTION: Logique initiateur améliorée
       if (isInitiator) {
         try {
           console.log(`🎯 Création offre pour ${userId}`);
-          const offer = await peer.createOffer();
+          const offer = await peer.createOffer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: true
+          });
           await peer.setLocalDescription(offer);
           socketRef.current.emit('offer', {
             to: userId,
@@ -438,6 +471,7 @@ export default function VideoConferenceApp() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // [RESTE DU CODE IDENTIQUE - interface utilisateur]
   // Page de connexion
   if (!isInRoom) {
     return (
