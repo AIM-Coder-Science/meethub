@@ -8,21 +8,25 @@ const SOCKET_SERVER_URL = 'https://meethub-khyr.onrender.com';
 // Configuration ICE servers
 const ICE_SERVERS = {
   iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478?transport=udp' },
+    { urls: 'stun:global.stun.twilio.com:3478?transport=tcp' },
     {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
+      urls: 'turn:global.turn.twilio.com:3478?transport=udp',
+      username: process.env.REACT_APP_TWILIO_SID,
+      credential: process.env.REACT_APP_TWILIO_SECRET
     },
     {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
+      urls: 'turn:global.turn.twilio.com:3478?transport=tcp', 
+      username: process.env.REACT_APP_TWILIO_SID,
+      credential: process.env.REACT_APP_TWILIO_SECRET
+    },
+    {
+      urls: 'turns:global.turn.twilio.com:5349?transport=tcp',
+      username: process.env.REACT_APP_TWILIO_SID,
+      credential: process.env.REACT_APP_TWILIO_SECRET
     }
   ],
+   iceTransportPolicy: 'all',
   iceCandidatePoolSize: 10
 };
 
@@ -49,16 +53,7 @@ export default function VideoConferenceApp() {
   const screenStreamRef = useRef(null);
   const peersRef = useRef({});
   const remoteVideosRef = useRef({});
-  const chatMessagesEndRef = useRef(null); // ← REF POUR AUTO-SCROLL
-
-  // Auto-scroll vers le bas quand nouveaux messages
-  const scrollToBottom = () => {
-    chatMessagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [chatMessages]);
+  const chatLogRef = useRef(null); // <-- CORRECTION 2.1 : Nouvelle référence pour le chat
 
   // Générer un ID de salle aléatoire
   const generateRoomId = () => {
@@ -90,6 +85,11 @@ export default function VideoConferenceApp() {
       reconnectionAttempts: 5,
       reconnectionDelay: 1000
     });
+    
+    // ... (Le reste de la logique Socket.io est ici) ...
+    // Note: Le code d'initialisation de Socket.io est très long, 
+    // il est omis ici pour la clarté, mais conservé dans la version complète.
+    // ...
 
     socketRef.current.on('connect', () => {
       console.log('✅ Connecté au serveur, ID:', socketRef.current.id);
@@ -217,6 +217,15 @@ export default function VideoConferenceApp() {
     };
   }, []);
 
+  // CORRECTION 2.2 : Logique d'auto-défilement
+  useEffect(() => {
+    if (chatLogRef.current) {
+      // Fait défiler l'élément jusqu'au bas du contenu (scrollHeight)
+      chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight;
+      console.log('💬 Auto-défilement effectué.');
+    }
+  }, [chatMessages, showChat]);
+
   // Créer une connexion peer
   const createPeerConnection = async (userId, isInitiator) => {
     console.log(`🔗 Création connexion peer avec ${userId} (initiateur: ${isInitiator})`);
@@ -227,6 +236,7 @@ export default function VideoConferenceApp() {
 
       // Ajouter les tracks locaux
       if (localStreamRef.current) {
+        // Cette boucle est maintenant exécutée car localStreamRef.current est stocké dans joinRoom
         localStreamRef.current.getTracks().forEach(track => {
           peer.addTrack(track, localStreamRef.current);
           console.log(`➕ Track ajouté (${track.kind}) pour ${userId}`);
@@ -319,38 +329,40 @@ export default function VideoConferenceApp() {
 
   // Démarrer le flux vidéo local
   const startLocalStream = async () => {
-    try {
-      console.log('🎥 Demande d\'accès média...');
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          facingMode: 'user'
-        },
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
-      
-      localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
+  try {
+    console.log('🎥 Vérification permissions média...');
+    
+    // Vérifier d'abord les permissions
+    const permissions = await navigator.permissions.query({ name: 'camera' });
+    console.log('Permission caméra:', permissions.state);
+    
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width: { ideal: 640 }, // Réduire la résolution pour tests
+        height: { ideal: 480 },
+        frameRate: { ideal: 30 }
+      },
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1 // Mono pour plus de stabilité
       }
-      
-      console.log('✅ Flux local démarré:', {
-        video: stream.getVideoTracks().length,
-        audio: stream.getAudioTracks().length
-      });
-      
-      return true;
-    } catch (error) {
-      console.error('❌ Erreur accès média:', error);
-      alert('Impossible d\'accéder à la caméra/micro. Vérifiez les permissions.');
-      return false;
-    }
-  };
+    });
+    
+    console.log('✅ Stream obtenu - Vidéo:', stream.getVideoTracks().length, 'Audio:', stream.getAudioTracks().length);
+    
+    // Vérifier chaque track
+    stream.getTracks().forEach(track => {
+      console.log(`Track ${track.kind}:`, track.readyState, track.enabled);
+    });
+    
+    return stream;
+  } catch (error) {
+    console.error('❌ Erreur média:', error);
+    return null;
+  }
+};
 
   // Rejoindre une salle
   const joinRoom = async () => {
@@ -364,8 +376,15 @@ export default function VideoConferenceApp() {
     }
 
     console.log(`🚪 Tentative de rejoindre la salle: ${roomId}`);
-    const success = await startLocalStream();
-    if (success) {
+    const stream = await startLocalStream(); // Renommage de 'success' en 'stream' pour clarté
+    if (stream) {
+      // <-- CORRECTION 1 : Stockage et affichage du stream local
+      localStreamRef.current = stream; 
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
+      // Fin CORRECTION 1 -->
+
       setIsInRoom(true);
       setParticipants([{ id: 'local', name: userName, isLocal: true, isVideoOn: true, isAudioOn: true }]);
       socketRef.current.emit('join-room', { roomId, userName });
@@ -471,7 +490,14 @@ export default function VideoConferenceApp() {
     }
     if (messageInput.trim()) {
       console.log('💬 Envoi message:', messageInput);
-      socketRef.current.emit('chat-message', { roomId, message: messageInput });
+      socketRef.current.emit('chat-message', { 
+        roomId, 
+        message: { 
+          sender: userName, 
+          text: messageInput.trim(), 
+          time: new Date().toISOString() 
+        } 
+      });
       setMessageInput('');
     }
   };
@@ -795,81 +821,82 @@ export default function VideoConferenceApp() {
               </button>
             </div>
 
-            {showChat && (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                {/* ZONE DES MESSAGES AVEC SCROLL CORRIGÉ */}
-                <div style={{ 
-                  flex: 1, 
-                  overflowY: 'auto', 
-                  padding: '1rem', 
-                  display: 'flex', 
-                  flexDirection: 'column', 
-                  gap: '0.75rem',
-                  minHeight: 0
-                }}>
-                  {chatMessages.map((msg) => (
-                    <div key={msg.id} style={{
-                      background: '#374151',
-                      borderRadius: '0.5rem',
-                      padding: '0.75rem',
-                      flexShrink: 0
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
-                        <span style={{ fontSize: '0.875rem', fontWeight: '500', color: '#60a5fa' }}>{msg.sender}</span>
-                        <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
-                          {new Date(msg.time).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-                        </span>
-                      </div>
-                      <p style={{ fontSize: '0.875rem', color: '#e5e7eb', margin: 0, wordBreak: 'break-word' }}>
-                        {msg.text}
-                      </p>
-                    </div>
-                  ))}
-                  {/* ELEMENT POUR AUTO-SCROLL */}
-                  <div ref={chatMessagesEndRef} />
-                </div>
-
-                {/* INPUT MESSAGE */}
-                <div style={{ 
-                  padding: '1rem', 
-                  borderTop: '1px solid #374151',
-                  flexShrink: 0
-                }}>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <input
-                      type="text"
-                      value={messageInput}
-                      onChange={(e) => setMessageInput(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                      placeholder="Écrivez un message..."
-                      style={{
-                        flex: 1,
-                        padding: '0.5rem 0.75rem',
-                        background: '#374151',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '0.5rem',
-                        outline: 'none'
-                      }}
-                    />
-                    <button
-                      onClick={sendMessage}
-                      style={{
-                        padding: '0.5rem 1rem',
-                        background: '#2563eb',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '0.5rem',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Envoyer
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
+      {showChat && (
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+    {/* Zone des messages avec scroll */}
+    <div 
+      ref={chatLogRef} // <-- CORRECTION 2.3 : Attachement de la référence
+      style={{ 
+        flex: 1, 
+        overflowY: 'auto', 
+        padding: '1rem', 
+        display: 'flex', 
+        flexDirection: 'column', 
+        gap: '0.75rem',
+        minHeight: 0 // ← IMPORTANT pour le scroll
+      }}
+    >
+      {chatMessages.map((msg, index) => ( // Ajout de 'index' pour la clé si 'id' est manquant
+        // Assurez-vous que les messages reçus via socket ont bien les propriétés 'sender', 'text', 'time'
+        <div key={msg.id || index} style={{ // Utilisation de l'index comme fallback pour la clé
+          background: '#374151',
+          borderRadius: '0.5rem',
+          padding: '0.75rem',
+          flexShrink: 0 // ← Empêche la compression des messages
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+            <span style={{ fontSize: '0.875rem', fontWeight: '500', color: '#60a5fa' }}>{msg.sender}</span>
+            <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
+              {new Date(msg.time).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          </div>
+          <p style={{ fontSize: '0.875rem', color: '#e5e7eb', margin: 0, wordBreak: 'break-word' }}>
+            {msg.text}
+          </p>
+        </div>
+      ))}
+    </div>
+    
+    {/* Input message (toujours en bas) */}
+    <div style={{ 
+      padding: '1rem', 
+      borderTop: '1px solid #374151',
+      flexShrink: 0 // ← Garde l'input fixe en bas
+    }}>
+      <div style={{ display: 'flex', gap: '0.5rem' }}>
+        <input
+          type="text"
+          value={messageInput}
+          onChange={(e) => setMessageInput(e.target.value)}
+          onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+          placeholder="Écrivez un message..."
+          style={{
+            flex: 1,
+            padding: '0.5rem 0.75rem',
+            background: '#374151',
+            color: 'white',
+            border: 'none',
+            borderRadius: '0.5rem',
+            outline: 'none'
+          }}
+        />
+        <button
+          onClick={sendMessage}
+          style={{
+            padding: '0.5rem 1rem',
+            background: '#2563eb',
+            color: 'white',
+            border: 'none',
+            borderRadius: '0.5rem',
+            cursor: 'pointer'
+          }}
+        >
+          Envoyer
+        </button>
+      </div>
+    </div>
+  </div>
+)}
             {showParticipants && (
               <div style={{ flex: 1, overflowY: 'auto', padding: '1rem' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
