@@ -5,34 +5,6 @@ import io from 'socket.io-client';
 // IMPORTANT : Remplacez par votre URL Render
 const SOCKET_SERVER_URL = 'https://meethub-khyr.onrender.com';
 
-// Configuration ICE servers
-const ICE_SERVERS = {
-  iceServers: [
-    { urls: 'stun:global.stun.twilio.com:3478?transport=udp' },
-    { urls: 'stun:global.stun.twilio.com:3478?transport=tcp' },
-    {
-      urls: 'turn:global.turn.twilio.com:3478?transport=udp',
-      username: process.env.REACT_APP_TWILIO_SID,
-      credential: process.env.REACT_APP_TWILIO_SECRET
-    },
-    {
-      urls: 'turn:global.turn.twilio.com:3478?transport=tcp', 
-      username: process.env.REACT_APP_TWILIO_SID,
-      credential: process.env.REACT_APP_TWILIO_SECRET
-    },
-    {
-      urls: 'turns:global.turn.twilio.com:5349?transport=tcp',
-      username: process.env.REACT_APP_TWILIO_SID,
-      credential: process.env.REACT_APP_TWILIO_SECRET
-    }
-  ],
-   iceTransportPolicy: 'all',
-  iceCandidatePoolSize: 10
-};
-
-console.log('Twilio SID:', process.env.REACT_APP_TWILIO_ACCOUNT_SID);
-console.log('Twilio Secret:', process.env.REACT_APP_TWILIO_API_SECRET);
-
 export default function VideoConferenceApp() {
   const [roomId, setRoomId] = useState('');
   const [userName, setUserName] = useState('');
@@ -49,6 +21,7 @@ export default function VideoConferenceApp() {
   const [copied, setCopied] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('Déconnecté');
   const [hasJoinedRoom, setHasJoinedRoom] = useState(false);
+  const [iceServers, setIceServers] = useState([]); // ← NOUVEAU: TURN sécurisé
   
   const socketRef = useRef(null);
   const localVideoRef = useRef(null);
@@ -56,6 +29,38 @@ export default function VideoConferenceApp() {
   const screenStreamRef = useRef(null);
   const peersRef = useRef({});
   const remoteVideosRef = useRef({});
+  const chatMessagesEndRef = useRef(null);
+
+  // Récupérer les credentials TURN sécurisés au chargement
+  useEffect(() => {
+    const fetchTurnCredentials = async () => {
+      try {
+        const response = await fetch('https://meethub-khyr.onrender.com/api/turn-credentials');
+        const data = await response.json();
+        setIceServers(data.iceServers);
+        console.log('✅ Credentials TURN récupérés:', data.iceServers);
+      } catch (error) {
+        console.error('❌ Erreur TURN credentials:', error);
+        // Fallback vers serveurs publics
+        setIceServers([
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' }
+        ]);
+      }
+    };
+    
+    fetchTurnCredentials();
+  }, []);
+
+  // Auto-scroll vers le bas quand nouveaux messages
+  const scrollToBottom = () => {
+    chatMessagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [chatMessages]);
 
   // Générer un ID de salle aléatoire
   const generateRoomId = () => {
@@ -201,12 +206,6 @@ export default function VideoConferenceApp() {
       setChatMessages(messages);
     });
 
-    // Confirmation de connexion à la room
-    socketRef.current.on('join-room-confirmation', (data) => {
-      console.log('✅ Confirmation join-room reçue:', data);
-      setHasJoinedRoom(true);
-    });
-
     return () => {
       if (socketRef.current) {
         socketRef.current.disconnect();
@@ -214,12 +213,19 @@ export default function VideoConferenceApp() {
     };
   }, []);
 
-  // Créer une connexion peer
+  // Créer une connexion peer AVEC TURN sécurisé
   const createPeerConnection = async (userId, isInitiator) => {
     console.log(`🔗 Création connexion peer avec ${userId} (initiateur: ${isInitiator})`);
     
     try {
-      const peer = new RTCPeerConnection(ICE_SERVERS);
+      const peer = new RTCPeerConnection({
+        iceServers: iceServers.length > 0 ? iceServers : [
+          { urls: 'stun:stun.l.google.com:19302' }, // Fallback
+          { urls: 'stun:stun1.l.google.com:19302' }
+        ],
+        iceCandidatePoolSize: 10
+      });
+      
       peersRef.current[userId] = peer;
 
       // Ajouter les tracks locaux
@@ -316,40 +322,38 @@ export default function VideoConferenceApp() {
 
   // Démarrer le flux vidéo local
   const startLocalStream = async () => {
-  try {
-    console.log('🎥 Vérification permissions média...');
-    
-    // Vérifier d'abord les permissions
-    const permissions = await navigator.permissions.query({ name: 'camera' });
-    console.log('Permission caméra:', permissions.state);
-    
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        width: { ideal: 640 }, // Réduire la résolution pour tests
-        height: { ideal: 480 },
-        frameRate: { ideal: 30 }
-      },
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        channelCount: 1 // Mono pour plus de stabilité
+    try {
+      console.log('🎥 Demande d\'accès média...');
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: 'user'
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+      
+      localStreamRef.current = stream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
       }
-    });
-    
-    console.log('✅ Stream obtenu - Vidéo:', stream.getVideoTracks().length, 'Audio:', stream.getAudioTracks().length);
-    
-    // Vérifier chaque track
-    stream.getTracks().forEach(track => {
-      console.log(`Track ${track.kind}:`, track.readyState, track.enabled);
-    });
-    
-    return stream;
-  } catch (error) {
-    console.error('❌ Erreur média:', error);
-    return null;
-  }
-};
+      
+      console.log('✅ Flux local démarré:', {
+        video: stream.getVideoTracks().length,
+        audio: stream.getAudioTracks().length
+      });
+      
+      return true;
+    } catch (error) {
+      console.error('❌ Erreur accès média:', error);
+      alert('Impossible d\'accéder à la caméra/micro. Vérifiez les permissions.');
+      return false;
+    }
+  };
 
   // Rejoindre une salle
   const joinRoom = async () => {
@@ -752,14 +756,15 @@ export default function VideoConferenceApp() {
           </div>
         </div>
 
-        {/* Panneau latéral */}
+        {/* Panneau latéral CORRIGÉ POUR LE SCROLL */}
         {(showChat || showParticipants) && (
           <div style={{
             width: '20rem',
             background: '#1f2937',
             borderLeft: '1px solid #374151',
             display: 'flex',
-            flexDirection: 'column'
+            flexDirection: 'column',
+            height: '100%'
           }}>
             <div style={{ display: 'flex', borderBottom: '1px solid #374151' }}>
               <button
@@ -794,78 +799,80 @@ export default function VideoConferenceApp() {
               </button>
             </div>
 
-      {showChat && (
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-    {/* Zone des messages avec scroll */}
-    <div style={{ 
-      flex: 1, 
-      overflowY: 'auto', 
-      padding: '1rem', 
-      display: 'flex', 
-      flexDirection: 'column', 
-      gap: '0.75rem',
-      minHeight: 0 // ← IMPORTANT pour le scroll
-    }}>
-      {chatMessages.map((msg) => (
-        <div key={msg.id} style={{
-          background: '#374151',
-          borderRadius: '0.5rem',
-          padding: '0.75rem',
-          flexShrink: 0 // ← Empêche la compression des messages
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
-            <span style={{ fontSize: '0.875rem', fontWeight: '500', color: '#60a5fa' }}>{msg.sender}</span>
-            <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
-              {new Date(msg.time).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-            </span>
-          </div>
-          <p style={{ fontSize: '0.875rem', color: '#e5e7eb', margin: 0, wordBreak: 'break-word' }}>
-            {msg.text}
-          </p>
-        </div>
-      ))}
-    </div>
-    
-    {/* Input message (toujours en bas) */}
-    <div style={{ 
-      padding: '1rem', 
-      borderTop: '1px solid #374151',
-      flexShrink: 0 // ← Garde l'input fixe en bas
-    }}>
-      <div style={{ display: 'flex', gap: '0.5rem' }}>
-        <input
-          type="text"
-          value={messageInput}
-          onChange={(e) => setMessageInput(e.target.value)}
-          onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-          placeholder="Écrivez un message..."
-          style={{
-            flex: 1,
-            padding: '0.5rem 0.75rem',
-            background: '#374151',
-            color: 'white',
-            border: 'none',
-            borderRadius: '0.5rem',
-            outline: 'none'
-          }}
-        />
-        <button
-          onClick={sendMessage}
-          style={{
-            padding: '0.5rem 1rem',
-            background: '#2563eb',
-            color: 'white',
-            border: 'none',
-            borderRadius: '0.5rem',
-            cursor: 'pointer'
-          }}
-        >
-          Envoyer
-        </button>
-      </div>
-    </div>
-  </div>
-)}
+            {showChat && (
+              <>
+                {/* CONTENEUR DE SCROLL */}
+                <div style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  padding: '1rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.75rem',
+                  minHeight: 0
+                }}>
+                  {chatMessages.map((msg) => (
+                    <div key={msg.id} style={{
+                      background: '#374151',
+                      borderRadius: '0.5rem',
+                      padding: '0.75rem',
+                      flexShrink: 0
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                        <span style={{ fontSize: '0.875rem', fontWeight: '500', color: '#60a5fa' }}>{msg.sender}</span>
+                        <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
+                          {new Date(msg.time).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <p style={{ fontSize: '0.875rem', color: '#e5e7eb', margin: 0, wordBreak: 'break-word' }}>
+                        {msg.text}
+                      </p>
+                    </div>
+                  ))}
+                  <div ref={chatMessagesEndRef} />
+                </div>
+
+                {/* Input en bas */}
+                <div style={{ 
+                  padding: '1rem', 
+                  borderTop: '1px solid #374151',
+                  background: '#1f2937'
+                }}>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <input
+                      type="text"
+                      value={messageInput}
+                      onChange={(e) => setMessageInput(e.target.value)}
+                      onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                      placeholder="Écrivez un message..."
+                      style={{
+                        flex: 1,
+                        padding: '0.5rem 0.75rem',
+                        background: '#374151',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '0.5rem',
+                        outline: 'none'
+                      }}
+                    />
+                    <button
+                      onClick={sendMessage}
+                      style={{
+                        padding: '0.5rem 1rem',
+                        background: '#2563eb',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '0.5rem',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Envoyer
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+
             {showParticipants && (
               <div style={{ flex: 1, overflowY: 'auto', padding: '1rem' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
