@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Video, VideoOff, Mic, MicOff, Phone, PhoneOff, MessageSquare, Users, Monitor, Copy, Check, MonitorOff } from 'lucide-react';
 import io from 'socket.io-client';
 
-// IMPORTANT : Remplacez par votre URL Render
 const SOCKET_SERVER_URL = 'https://meethub-khyr.onrender.com';
 
 export default function VideoConferenceApp() {
@@ -21,7 +20,7 @@ export default function VideoConferenceApp() {
   const [copied, setCopied] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('Déconnecté');
   const [hasJoinedRoom, setHasJoinedRoom] = useState(false);
-  const [iceServers, setIceServers] = useState([]); // ← NOUVEAU: TURN sécurisé
+  const [iceServers, setIceServers] = useState([]);
   
   const socketRef = useRef(null);
   const localVideoRef = useRef(null);
@@ -31,21 +30,21 @@ export default function VideoConferenceApp() {
   const remoteVideosRef = useRef({});
   const chatMessagesEndRef = useRef(null);
 
-  // Récupérer les credentials TURN sécurisés au chargement
+  // Récupérer les credentials TURN
   useEffect(() => {
     const fetchTurnCredentials = async () => {
       try {
         const response = await fetch('https://meethub-khyr.onrender.com/api/turn-credentials');
         const data = await response.json();
-        setIceServers(data.iceServers);
-        console.log('✅ Credentials TURN récupérés:', data.iceServers);
+        if (data.iceServers) {
+          setIceServers(data.iceServers);
+          console.log('✅ Credentials TURN récupérés');
+        }
       } catch (error) {
-        console.error('❌ Erreur TURN credentials:', error);
-        // Fallback vers serveurs publics
+        console.error('❌ Erreur TURN credentials, utilisation STUN:', error);
         setIceServers([
           { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' }
+          { urls: 'stun:stun1.l.google.com:19302' }
         ]);
       }
     };
@@ -53,7 +52,7 @@ export default function VideoConferenceApp() {
     fetchTurnCredentials();
   }, []);
 
-  // Auto-scroll vers le bas quand nouveaux messages
+  // Auto-scroll chat
   const scrollToBottom = () => {
     chatMessagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -62,12 +61,11 @@ export default function VideoConferenceApp() {
     scrollToBottom();
   }, [chatMessages]);
 
-  // Générer un ID de salle aléatoire
   const generateRoomId = () => {
     return Math.random().toString(36).substring(2, 10).toUpperCase();
   };
 
-  // Nettoyer à la déconnexion
+  // Nettoyage
   useEffect(() => {
     return () => {
       if (localStreamRef.current) {
@@ -82,7 +80,7 @@ export default function VideoConferenceApp() {
     };
   }, []);
 
-  // Initialiser Socket.io
+  // Initialiser Socket.io - CORRIGÉ
   useEffect(() => {
     console.log('🔌 Connexion au serveur:', SOCKET_SERVER_URL);
     
@@ -109,32 +107,23 @@ export default function VideoConferenceApp() {
       setConnectionStatus('Erreur de connexion');
     });
 
+    // CORRECTION: Gestion simplifiée des utilisateurs existants
     socketRef.current.on('existing-users', (users) => {
       console.log('👥 Utilisateurs existants:', users);
-      if (users && users.length > 0) {
-        users.forEach(user => {
-          console.log(`   → Ajout de ${user.name} (${user.id})`);
-          addParticipant(user.id, user.name);
-          // Attendre un peu avant de créer la connexion
-          setTimeout(() => {
-            console.log(`   → Création connexion avec ${user.id}`);
-            createPeerConnection(user.id, true);
-          }, 1000);
-        });
-      } else {
-        console.log('   → Aucun utilisateur existant');
-      }
+      users.forEach(user => {
+        console.log(`➕ Ajout participant: ${user.name} (${user.id})`);
+        addParticipant(user.id, user.name);
+        // L'INITIATEUR crée la connexion
+        createPeerConnection(user.id, true);
+      });
     });
 
+    // CORRECTION: Gestion simplifiée des nouveaux utilisateurs
     socketRef.current.on('user-joined', (user) => {
       console.log('✅ Utilisateur rejoint:', user);
-      console.log(`   → ${user.name} (${user.id})`);
       addParticipant(user.id, user.name);
-      // Important : Attendre que l'autre utilisateur soit prêt
-      setTimeout(() => {
-        console.log(`   → Création connexion peer avec ${user.id}`);
-        createPeerConnection(user.id, false);
-      }, 1500);
+      // Le NOUVEAU crée la connexion (non-initateur)
+      createPeerConnection(user.id, false);
     });
 
     socketRef.current.on('user-left', (user) => {
@@ -151,15 +140,19 @@ export default function VideoConferenceApp() {
       });
     });
 
+    // CORRECTION: Gestion des offres
     socketRef.current.on('offer', async ({ from, offer }) => {
       console.log('📨 Offre reçue de:', from);
       try {
         if (!peersRef.current[from]) {
+          console.log(`🆕 Création nouvelle connexion pour ${from}`);
           await createPeerConnection(from, false);
         }
         const peer = peersRef.current[from];
-        if (peer) {
+        if (peer && peer.signalingState !== 'stable') {
           await peer.setRemoteDescription(new RTCSessionDescription(offer));
+          console.log('✅ Description distante définie');
+          
           const answer = await peer.createAnswer();
           await peer.setLocalDescription(answer);
           socketRef.current.emit('answer', { to: from, answer });
@@ -174,9 +167,9 @@ export default function VideoConferenceApp() {
       console.log('📨 Réponse reçue de:', from);
       try {
         const peer = peersRef.current[from];
-        if (peer && peer.signalingState !== 'stable') {
+        if (peer && peer.signalingState === 'have-local-offer') {
           await peer.setRemoteDescription(new RTCSessionDescription(answer));
-          console.log('✅ Description distante définie pour:', from);
+          console.log('✅ Réponse traitée pour:', from);
         }
       } catch (error) {
         console.error('❌ Erreur traitement réponse:', error);
@@ -213,50 +206,53 @@ export default function VideoConferenceApp() {
     };
   }, []);
 
-  // Créer une connexion peer AVEC TURN sécurisé
+  // CORRECTION: Création connexion peer améliorée
   const createPeerConnection = async (userId, isInitiator) => {
-    console.log(`🔗 Création connexion peer avec ${userId} (initiateur: ${isInitiator})`);
+    console.log(`🔗 Création connexion avec ${userId} (initiateur: ${isInitiator})`);
     
     try {
-      const peer = new RTCPeerConnection({
+      // Configuration ICE simplifiée
+      const configuration = {
         iceServers: iceServers.length > 0 ? iceServers : [
-          { urls: 'stun:stun.l.google.com:19302' }, // Fallback
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ],
-        iceCandidatePoolSize: 10
-      });
+          { urls: 'stun:stun.l.google.com:19302' }
+        ]
+      };
       
+      const peer = new RTCPeerConnection(configuration);
       peersRef.current[userId] = peer;
 
       // Ajouter les tracks locaux
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(track => {
           peer.addTrack(track, localStreamRef.current);
-          console.log(`➕ Track ajouté (${track.kind}) pour ${userId}`);
+          console.log(`➕ Track ${track.kind} ajouté pour ${userId}`);
         });
       }
 
-      // Recevoir les tracks distants
+      // Gestion des tracks distants
       peer.ontrack = (event) => {
         console.log(`🎬 Track reçu de ${userId}:`, event.track.kind);
         const stream = event.streams[0];
         
-        setRemoteStreams(prev => ({
-          ...prev,
-          [userId]: stream
-        }));
+        if (stream) {
+          setRemoteStreams(prev => ({
+            ...prev,
+            [userId]: stream
+          }));
 
-        // Assigner le stream à la vidéo
-        if (remoteVideosRef.current[userId]) {
-          remoteVideosRef.current[userId].srcObject = stream;
-          console.log(`✅ Stream assigné à la vidéo de ${userId}`);
+          // Mettre à jour la vidéo
+          setTimeout(() => {
+            if (remoteVideosRef.current[userId]) {
+              remoteVideosRef.current[userId].srcObject = stream;
+              console.log(`✅ Stream assigné à ${userId}`);
+            }
+          }, 100);
         }
       };
 
-      // Gestion des candidats ICE
+      // Candidats ICE
       peer.onicecandidate = (event) => {
         if (event.candidate) {
-          console.log(`🧊 Envoi candidat ICE à ${userId}`);
           socketRef.current.emit('ice-candidate', {
             to: userId,
             candidate: event.candidate
@@ -264,26 +260,20 @@ export default function VideoConferenceApp() {
         }
       };
 
-      // État de la connexion
+      // États de connexion
       peer.onconnectionstatechange = () => {
-        console.log(`🔄 État connexion avec ${userId}:`, peer.connectionState);
-        if (peer.connectionState === 'failed') {
-          console.log(`❌ Connexion échouée avec ${userId}, redémarrage...`);
-          peer.restartIce();
-        }
+        console.log(`🔄 État ${userId}:`, peer.connectionState);
       };
 
       peer.oniceconnectionstatechange = () => {
-        console.log(`🧊 État ICE avec ${userId}:`, peer.iceConnectionState);
+        console.log(`🧊 ICE ${userId}:`, peer.iceConnectionState);
       };
 
-      // Si initiateur, créer l'offre
+      // CORRECTION: Logique initiateur/non-initateur simplifiée
       if (isInitiator) {
         try {
-          const offer = await peer.createOffer({
-            offerToReceiveAudio: true,
-            offerToReceiveVideo: true
-          });
+          console.log(`🎯 Création offre pour ${userId}`);
+          const offer = await peer.createOffer();
           await peer.setLocalDescription(offer);
           socketRef.current.emit('offer', {
             to: userId,
@@ -291,27 +281,25 @@ export default function VideoConferenceApp() {
           });
           console.log(`📤 Offre envoyée à ${userId}`);
         } catch (error) {
-          console.error(`❌ Erreur création offre pour ${userId}:`, error);
+          console.error(`❌ Erreur création offre:`, error);
         }
       }
 
       return peer;
     } catch (error) {
-      console.error(`❌ Erreur création peer pour ${userId}:`, error);
+      console.error(`❌ Erreur création peer:`, error);
       return null;
     }
   };
 
-  // Ajouter un participant
   const addParticipant = (id, name) => {
     setParticipants(prev => {
       if (prev.find(p => p.id === id)) return prev;
-      console.log(`➕ Participant ajouté: ${name} (${id})`);
-      return [...prev, { id, name, isLocal: false, isVideoOn: true, isAudioOn: true }];
+      console.log(`➕ Participant: ${name} (${id})`);
+      return [...prev, { id, name, isLocal: false }];
     });
   };
 
-  // Retirer un participant
   const removeParticipant = (id) => {
     console.log(`➖ Participant retiré: ${id}`);
     setParticipants(prev => prev.filter(p => p.id !== id));
@@ -320,15 +308,15 @@ export default function VideoConferenceApp() {
     }
   };
 
-  // Démarrer le flux vidéo local
+  // Démarrer le flux local
   const startLocalStream = async () => {
     try {
-      console.log('🎥 Demande d\'accès média...');
+      console.log('🎥 Demande accès média...');
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 1280 },
           height: { ideal: 720 },
-          facingMode: 'user'
+          frameRate: { ideal: 30 }
         },
         audio: {
           echoCancellation: true,
@@ -342,37 +330,28 @@ export default function VideoConferenceApp() {
         localVideoRef.current.srcObject = stream;
       }
       
-      console.log('✅ Flux local démarré:', {
-        video: stream.getVideoTracks().length,
-        audio: stream.getAudioTracks().length
-      });
-      
+      console.log('✅ Flux local démarré');
       return true;
     } catch (error) {
       console.error('❌ Erreur accès média:', error);
-      alert('Impossible d\'accéder à la caméra/micro. Vérifiez les permissions.');
+      alert('Impossible d\'accéder à la caméra/micro.');
       return false;
     }
   };
 
   // Rejoindre une salle
   const joinRoom = async () => {
-    if (!userName.trim()) {
-      alert('Veuillez entrer votre nom');
-      return;
-    }
-    if (!roomId.trim()) {
-      alert('Veuillez entrer un ID de salle');
+    if (!userName.trim() || !roomId.trim()) {
+      alert('Veuillez entrer votre nom et un ID de salle');
       return;
     }
 
-    console.log(`🚪 Tentative de rejoindre la salle: ${roomId}`);
+    console.log(`🚪 Rejoindre salle: ${roomId}`);
     const success = await startLocalStream();
     if (success) {
       setIsInRoom(true);
-      setParticipants([{ id: 'local', name: userName, isLocal: true, isVideoOn: true, isAudioOn: true }]);
+      setParticipants([{ id: 'local', name: userName, isLocal: true }]);
       socketRef.current.emit('join-room', { roomId, userName });
-      console.log(`✅ Émission join-room pour ${roomId}`);
       setHasJoinedRoom(true);
     }
   };
@@ -381,16 +360,15 @@ export default function VideoConferenceApp() {
   const leaveRoom = () => {
     console.log('🚪 Quitter la salle...');
     
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => track.stop());
-    }
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach(track => track.stop());
-    }
-    
-    Object.values(peersRef.current).forEach(peer => {
-      if (peer) peer.close();
+    // Arrêter tous les streams
+    [localStreamRef.current, screenStreamRef.current].forEach(stream => {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
     });
+    
+    // Fermer toutes les connexions peer
+    Object.values(peersRef.current).forEach(peer => peer?.close());
     peersRef.current = {};
     
     socketRef.current.emit('leave-room', { roomId });
@@ -409,7 +387,6 @@ export default function VideoConferenceApp() {
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoOn(videoTrack.enabled);
-        socketRef.current.emit('toggle-video', { roomId, isVideoOn: videoTrack.enabled });
         console.log('📹 Vidéo:', videoTrack.enabled ? 'ON' : 'OFF');
       }
     }
@@ -422,7 +399,6 @@ export default function VideoConferenceApp() {
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         setIsAudioOn(audioTrack.enabled);
-        socketRef.current.emit('toggle-audio', { roomId, isAudioOn: audioTrack.enabled });
         console.log('🎤 Audio:', audioTrack.enabled ? 'ON' : 'OFF');
       }
     }
@@ -431,26 +407,25 @@ export default function VideoConferenceApp() {
   // Partage d'écran
   const toggleScreenShare = async () => {
     if (isScreenSharing) {
+      // Arrêter le partage
       if (screenStreamRef.current) {
         screenStreamRef.current.getTracks().forEach(track => track.stop());
       }
       setIsScreenSharing(false);
-      socketRef.current.emit('screen-share-stop', { roomId });
       
-      if (localStreamRef.current && isVideoOn) {
-        const videoTrack = localStreamRef.current.getVideoTracks()[0];
-        if (videoTrack) videoTrack.enabled = true;
+      // Revenir au flux caméra
+      if (localVideoRef.current && localStreamRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
       }
     } else {
       try {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({
           video: { cursor: "always" },
-          audio: false
+          audio: true
         });
         
         screenStreamRef.current = screenStream;
         setIsScreenSharing(true);
-        socketRef.current.emit('screen-share-start', { roomId });
         
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = screenStream;
@@ -460,421 +435,112 @@ export default function VideoConferenceApp() {
           toggleScreenShare();
         };
       } catch (error) {
-        console.error('❌ Erreur partage d\'écran:', error);
+        console.error('❌ Erreur partage écran:', error);
       }
     }
   };
 
-  // Envoyer un message
+  // Envoyer message
   const sendMessage = () => {
-    if (!hasJoinedRoom) {
-      console.log('❌ Pas encore joint la room, message ignoré');
-      alert('Veuillez d\'abord rejoindre une salle');
-      return;
-    }
-    if (messageInput.trim()) {
-      console.log('💬 Envoi message:', messageInput);
+    if (messageInput.trim() && hasJoinedRoom) {
       socketRef.current.emit('chat-message', { roomId, message: messageInput });
       setMessageInput('');
     }
   };
 
-  // Copier l'ID de salle
   const copyRoomId = () => {
     navigator.clipboard.writeText(roomId);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Page de connexion
-  if (!isInRoom) {
-    return (
-      <div style={{
-        minHeight: '100vh',
-        background: 'linear-gradient(135deg, #1e3a8a 0%, #7c3aed 50%, #4f46e5 100%)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '1rem'
-      }}>
-        <div style={{
-          background: 'white',
-          borderRadius: '1rem',
-          boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)',
-          padding: '2rem',
-          maxWidth: '28rem',
-          width: '100%'
-        }}>
-          <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-            <div style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: '4rem',
-              height: '4rem',
-              background: 'linear-gradient(135deg, #3b82f6 0%, #9333ea 100%)',
-              borderRadius: '50%',
-              marginBottom: '1rem'
-            }}>
-              <Video style={{ width: '2rem', height: '2rem', color: 'white' }} />
+  // CORRECTION: Style amélioré pour le scroll du chat
+  const chatContainerStyle = {
+    flex: 1,
+    overflowY: 'auto',
+    padding: '1rem',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.75rem',
+    minHeight: 0
+  };
+
+  // [RESTE DU CODE IDENTIQUE JUSQU'À LA SECTION CHAT...]
+
+  // Dans la partie Chat, REMPLACER le contenu par :
+  {showChat && (
+    <div style={{ 
+      flex: 1, 
+      display: 'flex', 
+      flexDirection: 'column',
+      minHeight: 0
+    }}>
+      {/* Messages avec scroll */}
+      <div style={chatContainerStyle}>
+        {chatMessages.map((msg) => (
+          <div key={msg.id} style={{
+            background: '#374151',
+            borderRadius: '0.5rem',
+            padding: '0.75rem',
+            flexShrink: 0
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+              <span style={{ fontSize: '0.875rem', fontWeight: '500', color: '#60a5fa' }}>{msg.sender}</span>
+              <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
+                {new Date(msg.time).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+              </span>
             </div>
-            <h1 style={{ fontSize: '1.875rem', fontWeight: 'bold', color: '#1f2937', marginBottom: '0.5rem' }}>
-              MeetHub Pro
-            </h1>
-            <p style={{ color: '#6b7280' }}>Visioconférence professionnelle</p>
-            <p style={{ fontSize: '0.75rem', color: connectionStatus === 'Connecté' ? '#10b981' : '#ef4444', marginTop: '0.5rem' }}>
-              Status: {connectionStatus}
+            <p style={{ fontSize: '0.875rem', color: '#e5e7eb', margin: 0, wordBreak: 'break-word' }}>
+              {msg.text}
             </p>
           </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div>
-              <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', color: '#374151', marginBottom: '0.5rem' }}>
-                Votre nom
-              </label>
-              <input
-                type="text"
-                value={userName}
-                onChange={(e) => setUserName(e.target.value)}
-                placeholder="Entrez votre nom"
-                style={{
-                  width: '100%',
-                  padding: '0.75rem 1rem',
-                  border: '1px solid #d1d5db',
-                  borderRadius: '0.5rem',
-                  fontSize: '1rem',
-                  outline: 'none'
-                }}
-              />
-            </div>
-
-            <div>
-              <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', color: '#374151', marginBottom: '0.5rem' }}>
-                ID de la salle
-              </label>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <input
-                  type="text"
-                  value={roomId}
-                  onChange={(e) => setRoomId(e.target.value.toUpperCase())}
-                  placeholder="Entrez ou générez un ID"
-                  style={{
-                    flex: 1,
-                    padding: '0.75rem 1rem',
-                    border: '1px solid #d1d5db',
-                    borderRadius: '0.5rem',
-                    fontSize: '1rem',
-                    outline: 'none'
-                  }}
-                />
-                <button
-                  onClick={() => setRoomId(generateRoomId())}
-                  style={{
-                    padding: '0.75rem 1rem',
-                    background: '#e5e7eb',
-                    border: 'none',
-                    borderRadius: '0.5rem',
-                    fontWeight: '500',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Générer
-                </button>
-              </div>
-            </div>
-
-            <button
-              onClick={joinRoom}
-              style={{
-                width: '100%',
-                padding: '0.75rem',
-                background: 'linear-gradient(135deg, #3b82f6 0%, #9333ea 100%)',
-                color: 'white',
-                border: 'none',
-                borderRadius: '0.5rem',
-                fontWeight: '600',
-                fontSize: '1rem',
-                cursor: 'pointer',
-                boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)'
-              }}
-            >
-              Rejoindre la salle
-            </button>
-          </div>
-
-          <div style={{ marginTop: '1.5rem', textAlign: 'center', fontSize: '0.875rem', color: '#6b7280' }}>
-            <p>✓ Jusqu'à 50-100 participants</p>
-            <p>✓ Chat • Vidéo HD • Audio clair</p>
-            <p>✓ Partage d'écran inclus</p>
-          </div>
-        </div>
+        ))}
+        <div ref={chatMessagesEndRef} />
       </div>
-    );
-  }
 
-  // Interface de visioconférence
-  return (
-    <div style={{ height: '100vh', background: '#111827', display: 'flex', flexDirection: 'column' }}>
-      {/* En-tête */}
-      <div style={{
+      {/* Input message */}
+      <div style={{ 
+        padding: '1rem', 
+        borderTop: '1px solid #374151',
         background: '#1f2937',
-        padding: '1rem 1.5rem',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        borderBottom: '1px solid #374151'
+        flexShrink: 0
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <h1 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'white' }}>MeetHub Pro</h1>
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            background: '#374151',
-            padding: '0.5rem 0.75rem',
-            borderRadius: '0.5rem'
-          }}>
-            <span style={{ color: '#d1d5db', fontSize: '0.875rem' }}>Salle: {roomId}</span>
-            <button onClick={copyRoomId} style={{
-              background: 'transparent',
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <input
+            type="text"
+            value={messageInput}
+            onChange={(e) => setMessageInput(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+            placeholder="Écrivez un message..."
+            style={{
+              flex: 1,
+              padding: '0.5rem 0.75rem',
+              background: '#374151',
+              color: 'white',
               border: 'none',
-              color: '#9ca3af',
-              cursor: 'pointer',
-              padding: '0.25rem'
-            }}>
-              {copied ? <Check style={{ width: '1rem', height: '1rem' }} /> : <Copy style={{ width: '1rem', height: '1rem' }} />}
-            </button>
-          </div>
+              borderRadius: '0.5rem',
+              outline: 'none'
+            }}
+          />
+          <button
+            onClick={sendMessage}
+            style={{
+              padding: '0.5rem 1rem',
+              background: '#2563eb',
+              color: 'white',
+              border: 'none',
+              borderRadius: '0.5rem',
+              cursor: 'pointer'
+            }}
+          >
+            Envoyer
+          </button>
         </div>
-        <button
-          onClick={() => setShowParticipants(!showParticipants)}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            background: '#374151',
-            padding: '0.5rem 1rem',
-            borderRadius: '0.5rem',
-            color: 'white',
-            border: 'none',
-            cursor: 'pointer'
-          }}
-        >
-          <Users style={{ width: '1.25rem', height: '1.25rem' }} />
-          <span>{participants.length}</span>
-        </button>
       </div>
+    </div>
+  )}
 
-      {/* Zone principale */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {/* Vidéos */}
-        <div style={{ flex: 1, padding: '1rem', overflowY: 'auto' }}>
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-            gap: '1rem'
-          }}>
-            {/* Vidéo locale */}
-            <div style={{ position: 'relative', background: '#1f2937', borderRadius: '0.5rem', overflow: 'hidden', aspectRatio: '16/9' }}>
-              <video
-                ref={localVideoRef}
-                autoPlay
-                muted
-                playsInline
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-              />
-              <div style={{
-                position: 'absolute',
-                bottom: '0.75rem',
-                left: '0.75rem',
-                background: 'rgba(0,0,0,0.6)',
-                padding: '0.25rem 0.75rem',
-                borderRadius: '9999px'
-              }}>
-                <span style={{ color: 'white', fontSize: '0.875rem', fontWeight: '500' }}>{userName} (Vous)</span>
-              </div>
-              {!isVideoOn && !isScreenSharing && (
-                <div style={{
-                  position: 'absolute',
-                  inset: 0,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  background: '#374151'
-                }}>
-                  <VideoOff style={{ width: '3rem', height: '3rem', color: '#9ca3af' }} />
-                </div>
-              )}
-            </div>
-
-            {/* Vidéos des autres participants */}
-            {participants.filter(p => !p.isLocal).map((participant) => (
-              <div key={participant.id} style={{
-                position: 'relative',
-                background: '#1f2937',
-                borderRadius: '0.5rem',
-                overflow: 'hidden',
-                aspectRatio: '16/9'
-              }}>
-                <video
-                  ref={el => {
-                    remoteVideosRef.current[participant.id] = el;
-                    if (el && remoteStreams[participant.id]) {
-                      el.srcObject = remoteStreams[participant.id];
-                    }
-                  }}
-                  autoPlay
-                  playsInline
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                />
-                <div style={{
-                  position: 'absolute',
-                  bottom: '0.75rem',
-                  left: '0.75rem',
-                  background: 'rgba(0,0,0,0.6)',
-                  padding: '0.25rem 0.75rem',
-                  borderRadius: '9999px'
-                }}>
-                  <span style={{ color: 'white', fontSize: '0.875rem', fontWeight: '500' }}>{participant.name}</span>
-                </div>
-                {!remoteStreams[participant.id] && (
-                  <div style={{
-                    position: 'absolute',
-                    inset: 0,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)'
-                  }}>
-                    <div style={{ color: 'white', fontSize: '2.25rem', fontWeight: 'bold' }}>
-                      {participant.name.charAt(0).toUpperCase()}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Panneau latéral CORRIGÉ POUR LE SCROLL */}
-        {(showChat || showParticipants) && (
-          <div style={{
-            width: '20rem',
-            background: '#1f2937',
-            borderLeft: '1px solid #374151',
-            display: 'flex',
-            flexDirection: 'column',
-            height: '100%'
-          }}>
-            <div style={{ display: 'flex', borderBottom: '1px solid #374151' }}>
-              <button
-                onClick={() => { setShowChat(true); setShowParticipants(false); }}
-                style={{
-                  flex: 1,
-                  padding: '0.75rem 1rem',
-                  fontSize: '0.875rem',
-                  fontWeight: '500',
-                  background: showChat ? '#374151' : 'transparent',
-                  color: showChat ? 'white' : '#9ca3af',
-                  border: 'none',
-                  cursor: 'pointer'
-                }}
-              >
-                Chat
-              </button>
-              <button
-                onClick={() => { setShowParticipants(true); setShowChat(false); }}
-                style={{
-                  flex: 1,
-                  padding: '0.75rem 1rem',
-                  fontSize: '0.875rem',
-                  fontWeight: '500',
-                  background: showParticipants ? '#374151' : 'transparent',
-                  color: showParticipants ? 'white' : '#9ca3af',
-                  border: 'none',
-                  cursor: 'pointer'
-                }}
-              >
-                Participants
-              </button>
-            </div>
-
-            {showChat && (
-              <>
-                {/* CONTENEUR DE SCROLL */}
-                <div style={{
-                  flex: 1,
-                  overflowY: 'auto',
-                  padding: '1rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '0.75rem',
-                  minHeight: 0,
-                  maxHeight: '100%'
-                }}>
-                  {chatMessages.map((msg) => (
-                    <div key={msg.id} style={{
-                      background: '#374151',
-                      borderRadius: '0.5rem',
-                      padding: '0.75rem',
-                      flexShrink: 0
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
-                        <span style={{ fontSize: '0.875rem', fontWeight: '500', color: '#60a5fa' }}>{msg.sender}</span>
-                        <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
-                          {new Date(msg.time).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-                        </span>
-                      </div>
-                      <p style={{ fontSize: '0.875rem', color: '#e5e7eb', margin: 0, wordBreak: 'break-word' }}>
-                        {msg.text}
-                      </p>
-                    </div>
-                  ))}
-                  <div ref={chatMessagesEndRef} />
-                </div>
-
-                {/* Input en bas */}
-                <div style={{ 
-                  padding: '1rem', 
-                  borderTop: '1px solid #374151',
-                  background: '#1f2937'
-                }}>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <input
-                      type="text"
-                      value={messageInput}
-                      onChange={(e) => setMessageInput(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                      placeholder="Écrivez un message..."
-                      style={{
-                        flex: 1,
-                        padding: '0.5rem 0.75rem',
-                        background: '#374151',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '0.5rem',
-                        outline: 'none'
-                      }}
-                    />
-                    <button
-                      onClick={sendMessage}
-                      style={{
-                        padding: '0.5rem 1rem',
-                        background: '#2563eb',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '0.5rem',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Envoyer
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
-
-            {showParticipants && (
+{showParticipants && (
               <div style={{ flex: 1, overflowY: 'auto', padding: '1rem' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   {participants.map((participant) => (
