@@ -6,27 +6,47 @@ import io from 'socket.io-client';
 const SOCKET_SERVER_URL = 'https://meethub-khyr.onrender.com';
 
 // Configuration ICE servers
+// SUPPRIMEZ TOUT LE BLOC ACTUEL ET REMPLACEZ PAR :
+
 const ICE_SERVERS = {
   iceServers: [
-    { urls: 'stun:global.stun.twilio.com:3478?transport=udp' },
-    { urls: 'stun:global.stun.twilio.com:3478?transport=tcp' },
+    // STUN servers Google (gratuits)
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    
+    // TURN Numb.viagenie (gratuit, fiable)
     {
-      urls: 'turn:global.turn.twilio.com:3478?transport=udp',
-      username: process.env.REACT_APP_TWILIO_SID,
-      credential: process.env.REACT_APP_TWILIO_SECRET
+      urls: 'turn:numb.viagenie.ca',
+      username: 'webrtc@live.com',
+      credential: 'muazkh'
     },
     {
-      urls: 'turn:global.turn.twilio.com:3478?transport=tcp', 
-      username: process.env.REACT_APP_TWILIO_SID,
-      credential: process.env.REACT_APP_TWILIO_SECRET
+      urls: 'turn:numb.viagenie.ca:3478?transport=tcp',
+      username: 'webrtc@live.com',
+      credential: 'muazkh'
+    },
+    
+    // TURN OpenRelay (gratuit)
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
     },
     {
-      urls: 'turns:global.turn.twilio.com:5349?transport=tcp',
-      username: process.env.REACT_APP_TWILIO_SID,
-      credential: process.env.REACT_APP_TWILIO_SECRET
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
     }
   ],
-   iceTransportPolicy: 'all',
+  iceTransportPolicy: 'all',
   iceCandidatePoolSize: 10
 };
 
