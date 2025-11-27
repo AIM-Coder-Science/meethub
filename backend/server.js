@@ -65,89 +65,64 @@ app.get('/api/room/:roomId', (req, res) => {
 
 // Route de diagnostic TURN
 app.get('/api/debug-turn', (req, res) => {
-  const apiKey = process.env.METERED_API_KEY;
-  
   res.json({
-    meteredConfigured: !!apiKey,
-    apiKeyPresent: !!apiKey,
-    apiKeyLength: apiKey ? apiKey.length : 0,
-    directConfig: {
-      stun: 'stun:stun.relay.metered.ca:80',
-      turn: 'turn:global.relay.metered.ca:80',
-      username: 'd4682bb48701b55009b58f1c',
-      credentialLength: 'Ujx2pj32ryDG3G1R'.length
-    }
+    status: 'Serveur TURN configuré avec services alternatifs',
+    services: [
+      'STUN Google',
+      'TURN publics (openrelay)',
+      'TURN Xirsys (gratuit)'
+    ]
   });
 });
 
-// Route de diagnostic détaillé TURN
-app.get('/api/debug-turn-detailed', async (req, res) => {
-  try {
-    const apiKey = process.env.METERED_API_KEY;
-    console.log('🔍 Debug TURN détaillé');
-    
-    // Test de l'API Metered
-    let meteredResponse = null;
-    let meteredError = null;
-    if (apiKey) {
-      try {
-        const response = await fetch(`https://meethub.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`);
-        if (response.ok) {
-          meteredResponse = await response.json();
-          console.log('✅ Réponse Metered API:', meteredResponse);
-        } else {
-          meteredError = `HTTP ${response.status}: ${response.statusText}`;
-          console.log('❌ Erreur API Metered:', meteredError);
-        }
-      } catch (error) {
-        meteredError = error.message;
-        console.log('❌ Erreur API Metered:', error.message);
-      }
-    }
-    
-    res.json({
-      meteredConfigured: !!apiKey,
-      apiKeyPresent: !!apiKey,
-      apiKey: apiKey ? `${apiKey.substring(0, 10)}...` : 'Non configuré',
-      meteredApiResponse: meteredResponse,
-      meteredApiError: meteredError,
-      directConfig: {
-        stun: 'stun:stun.relay.metered.ca:80',
-        turn: 'turn:global.relay.metered.ca:80',
-        username: 'd4682bb48701b55009b58f1c',
-        credentialLength: 'Ujx2pj32ryDG3G1R'.length,
-        services: [
-          'stun:stun.relay.metered.ca:80',
-          'turn:global.relay.metered.ca:80',
-          'turn:global.relay.metered.ca:80?transport=tcp',
-          'turn:global.relay.metered.ca:443',
-          'turns:global.relay.metered.ca:443?transport=tcp'
-        ]
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Route pour générer les credentials TURN - VERSION CORRIGÉE AVEC CONFIGURATION DIRECTE
+// Route pour générer les credentials TURN - SOLUTION ALTERNATIVE
 app.get('/api/turn-credentials', (req, res) => {
   console.log('🔐 Demande de credentials TURN reçue');
   
-  // CONFIGURATION DIRECTE avec vos credentials Metered
+  // CONFIGURATION AVEC SERVICES TURN ALTERNATIFS FIABLES
   const credentials = {
     iceServers: [
-      // STUN servers Metered
-      { urls: 'stun:stun.relay.metered.ca:80' },
+      // === STUN SERVERS (publics et fiables) ===
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      { urls: 'stun:stun.voipbuster.com:3478' },
+      { urls: 'stun:stun.voipstunt.com:3478' },
       
-      // TURN servers Metered avec vos credentials
+      // === TURN SERVERS PUBLIC (openrelay - gratuit) ===
       { 
-        urls: 'turn:global.relay.metered.ca:80',
-        username: 'd4682bb48701b55009b58f1c',
-        credential: 'Ujx2pj32ryDG3G1R'
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
       },
       { 
-        urls: 'turn:global.relay.metered.ca:80?transport=tcp',
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      { 
+        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      
+      // === TURN SERVERS Xirsys (service gratuit) ===
+      {
+        urls: "turn:turn.xten.com:3478?transport=udp",
+        username: "matt",
+        credential: "guest"
+      },
+      {
+        urls: "turn:turn.xten.com:3478?transport=tcp", 
+        username: "matt",
+        credential: "guest"
+      },
+      
+      // === VOTRE CONFIGURATION METERED (en dernier recours) ===
+      { 
+        urls: 'turn:global.relay.metered.ca:80',
         username: 'd4682bb48701b55009b58f1c',
         credential: 'Ujx2pj32ryDG3G1R'
       },
@@ -155,26 +130,14 @@ app.get('/api/turn-credentials', (req, res) => {
         urls: 'turn:global.relay.metered.ca:443',
         username: 'd4682bb48701b55009b58f1c',
         credential: 'Ujx2pj32ryDG3G1R'
-      },
-      { 
-        urls: 'turns:global.relay.metered.ca:443?transport=tcp',
-        username: 'd4682bb48701b55009b58f1c',
-        credential: 'Ujx2pj32ryDG3G1R'
-      },
-      
-      // STUN publics supplémentaires en fallback
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun3.l.google.com:19302' },
-      { urls: 'stun:stun4.l.google.com:19302' }
+      }
     ]
   };
 
-  console.log('✅ Credentials TURN générés avec configuration directe Metered');
-  console.log(`   Nombre de serveurs ICE: ${credentials.iceServers.length}`);
-  console.log(`   STUN Metered: stun:stun.relay.metered.ca:80`);
-  console.log(`   TURN Metered: 4 serveurs avec credentials directs`);
+  console.log('✅ Configuration TURN alternative générée');
+  console.log(`   Nombre total de serveurs ICE: ${credentials.iceServers.length}`);
+  console.log(`   STUN: 7 serveurs Google et publics`);
+  console.log(`   TURN: 5 serveurs publics alternatifs`);
   
   res.json(credentials);
 });
@@ -558,7 +521,7 @@ server.listen(PORT, () => {
   console.log(`╚═══════════════════════════════════════╝`);
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌐 WebSocket: Prêt`);
-  console.log(`🔐 TURN: Configuration directe Metered`);
+  console.log(`🔐 TURN: Services alternatifs configurés`);
   console.log(`⏰ Heure: ${new Date().toLocaleString('fr-FR')}`);
   console.log(`\n✅ En attente de connexions...\n`);
 });
