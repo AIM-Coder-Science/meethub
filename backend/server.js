@@ -63,29 +63,25 @@ app.get('/api/room/:roomId', (req, res) => {
   }
 });
 
-// Route de diagnostic TURN
+// Route de diagnostic Metered TURN
 app.get('/api/debug-turn', (req, res) => {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  const apiKey = process.env.METERED_API_KEY;
   
   res.json({
-    twilioConfigured: !!(accountSid && authToken),
-    accountSidPresent: !!accountSid,
-    authTokenPresent: !!authToken,
-    accountSidLength: accountSid ? accountSid.length : 0,
-    authTokenLength: authToken ? authToken.length : 0
+    meteredConfigured: !!apiKey,
+    apiKeyPresent: !!apiKey,
+    apiKeyLength: apiKey ? apiKey.length : 0
   });
 });
 
-// Route pour générer les tokens Twilio TURN sécurisés - VERSION CORRIGÉE
-app.get('/api/turn-credentials', (req, res) => {
-  console.log('🔐 Demande de credentials TURN reçue');
+// Route pour récupérer les credentials TURN depuis Metered API
+app.get('/api/turn-credentials', async (req, res) => {
+  console.log('🔐 Demande de credentials TURN Metered reçue');
   
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  const apiKey = process.env.METERED_API_KEY;
   
-  if (!accountSid || !authToken) {
-    console.log('❌ Twilio non configuré - variables manquantes');
+  if (!apiKey) {
+    console.log('❌ Metered non configuré - API key manquante');
     return res.json({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -97,32 +93,36 @@ app.get('/api/turn-credentials', (req, res) => {
     });
   }
 
-  console.log('✅ Génération des credentials TURN Twilio');
-
-  // CORRECTION: Utiliser le format correct pour Twilio
-  const credentials = {
-    iceServers: [
-      { urls: 'stun:global.stun.twilio.com:3478?transport=udp' },
-      { 
-        urls: 'turn:global.turn.twilio.com:3478?transport=udp',
-        username: accountSid,
-        credential: authToken
-      },
-      { 
-        urls: 'turn:global.turn.twilio.com:3478?transport=tcp',
-        username: accountSid,
-        credential: authToken
-      },
-      { 
-        urls: 'turns:global.turn.twilio.com:5349?transport=tcp',
-        username: accountSid,
-        credential: authToken
-      }
-    ]
-  };
-
-  console.log('✅ Credentials TURN générés avec succès');
-  res.json(credentials);
+  try {
+    console.log('🔄 Récupération des credentials TURN depuis Metered API...');
+    
+    const response = await fetch(`https://meethub.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`);
+    
+    if (!response.ok) {
+      throw new Error(`Erreur API Metered: ${response.status} ${response.statusText}`);
+    }
+    
+    const iceServers = await response.json();
+    
+    console.log('✅ Credentials TURN Metered récupérés avec succès');
+    console.log(`   Nombre de serveurs: ${iceServers.length}`);
+    
+    res.json({ iceServers });
+    
+  } catch (error) {
+    console.error('❌ Erreur lors de la récupération des credentials TURN:', error);
+    
+    // Fallback vers les serveurs STUN publics en cas d'erreur
+    res.json({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' }
+      ]
+    });
+  }
 });
 
 // Gestion des connexions Socket.io
@@ -504,7 +504,7 @@ server.listen(PORT, () => {
   console.log(`╚═══════════════════════════════════════╝`);
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌐 WebSocket: Prêt`);
-  console.log(`🔐 TURN: ${process.env.TWILIO_ACCOUNT_SID ? 'Configuré' : 'Non configuré'}`);
+  console.log(`🔐 TURN: ${process.env.METERED_API_KEY ? 'Metered Configuré' : 'Non configuré'}`);
   console.log(`⏰ Heure: ${new Date().toLocaleString('fr-FR')}`);
   console.log(`\n✅ En attente de connexions...\n`);
 });
