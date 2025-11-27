@@ -6,47 +6,27 @@ import io from 'socket.io-client';
 const SOCKET_SERVER_URL = 'https://meethub-khyr.onrender.com';
 
 // Configuration ICE servers
-// SUPPRIMEZ TOUT LE BLOC ACTUEL ET REMPLACEZ PAR :
-
 const ICE_SERVERS = {
   iceServers: [
-    // STUN servers Google (gratuits)
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-    
-    // TURN Numb.viagenie (gratuit, fiable)
+    { urls: 'stun:global.stun.twilio.com:3478?transport=udp' },
+    { urls: 'stun:global.stun.twilio.com:3478?transport=tcp' },
     {
-      urls: 'turn:numb.viagenie.ca',
-      username: 'webrtc@live.com',
-      credential: 'muazkh'
+      urls: 'turn:global.turn.twilio.com:3478?transport=udp',
+      username: process.env.REACT_APP_TWILIO_SID,
+      credential: process.env.REACT_APP_TWILIO_SECRET
     },
     {
-      urls: 'turn:numb.viagenie.ca:3478?transport=tcp',
-      username: 'webrtc@live.com',
-      credential: 'muazkh'
-    },
-    
-    // TURN OpenRelay (gratuit)
-    {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
+      urls: 'turn:global.turn.twilio.com:3478?transport=tcp', 
+      username: process.env.REACT_APP_TWILIO_SID,
+      credential: process.env.REACT_APP_TWILIO_SECRET
     },
     {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
+      urls: 'turns:global.turn.twilio.com:5349?transport=tcp',
+      username: process.env.REACT_APP_TWILIO_SID,
+      credential: process.env.REACT_APP_TWILIO_SECRET
     }
   ],
-  iceTransportPolicy: 'all',
+   iceTransportPolicy: 'all',
   iceCandidatePoolSize: 10
 };
 
@@ -73,7 +53,6 @@ export default function VideoConferenceApp() {
   const screenStreamRef = useRef(null);
   const peersRef = useRef({});
   const remoteVideosRef = useRef({});
-  const chatLogRef = useRef(null); // <-- CORRECTION 2.1 : Nouvelle référence pour le chat
 
   // Générer un ID de salle aléatoire
   const generateRoomId = () => {
@@ -105,11 +84,6 @@ export default function VideoConferenceApp() {
       reconnectionAttempts: 5,
       reconnectionDelay: 1000
     });
-    
-    // ... (Le reste de la logique Socket.io est ici) ...
-    // Note: Le code d'initialisation de Socket.io est très long, 
-    // il est omis ici pour la clarté, mais conservé dans la version complète.
-    // ...
 
     socketRef.current.on('connect', () => {
       console.log('✅ Connecté au serveur, ID:', socketRef.current.id);
@@ -237,15 +211,6 @@ export default function VideoConferenceApp() {
     };
   }, []);
 
-  // CORRECTION 2.2 : Logique d'auto-défilement
-  useEffect(() => {
-    if (chatLogRef.current) {
-      // Fait défiler l'élément jusqu'au bas du contenu (scrollHeight)
-      chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight;
-      console.log('💬 Auto-défilement effectué.');
-    }
-  }, [chatMessages, showChat]);
-
   // Créer une connexion peer
   const createPeerConnection = async (userId, isInitiator) => {
     console.log(`🔗 Création connexion peer avec ${userId} (initiateur: ${isInitiator})`);
@@ -256,7 +221,6 @@ export default function VideoConferenceApp() {
 
       // Ajouter les tracks locaux
       if (localStreamRef.current) {
-        // Cette boucle est maintenant exécutée car localStreamRef.current est stocké dans joinRoom
         localStreamRef.current.getTracks().forEach(track => {
           peer.addTrack(track, localStreamRef.current);
           console.log(`➕ Track ajouté (${track.kind}) pour ${userId}`);
@@ -396,15 +360,8 @@ export default function VideoConferenceApp() {
     }
 
     console.log(`🚪 Tentative de rejoindre la salle: ${roomId}`);
-    const stream = await startLocalStream(); // Renommage de 'success' en 'stream' pour clarté
-    if (stream) {
-      // <-- CORRECTION 1 : Stockage et affichage du stream local
-      localStreamRef.current = stream; 
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
-      // Fin CORRECTION 1 -->
-
+    const success = await startLocalStream();
+    if (success) {
       setIsInRoom(true);
       setParticipants([{ id: 'local', name: userName, isLocal: true, isVideoOn: true, isAudioOn: true }]);
       socketRef.current.emit('join-room', { roomId, userName });
@@ -510,14 +467,7 @@ export default function VideoConferenceApp() {
     }
     if (messageInput.trim()) {
       console.log('💬 Envoi message:', messageInput);
-      socketRef.current.emit('chat-message', { 
-        roomId, 
-        message: { 
-          sender: userName, 
-          text: messageInput.trim(), 
-          time: new Date().toISOString() 
-        } 
-      });
+      socketRef.current.emit('chat-message', { roomId, message: messageInput });
       setMessageInput('');
     }
   };
@@ -844,21 +794,17 @@ export default function VideoConferenceApp() {
       {showChat && (
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
     {/* Zone des messages avec scroll */}
-    <div 
-      ref={chatLogRef} // <-- CORRECTION 2.3 : Attachement de la référence
-      style={{ 
-        flex: 1, 
-        overflowY: 'auto', 
-        padding: '1rem', 
-        display: 'flex', 
-        flexDirection: 'column', 
-        gap: '0.75rem',
-        minHeight: 0 // ← IMPORTANT pour le scroll
-      }}
-    >
-      {chatMessages.map((msg, index) => ( // Ajout de 'index' pour la clé si 'id' est manquant
-        // Assurez-vous que les messages reçus via socket ont bien les propriétés 'sender', 'text', 'time'
-        <div key={msg.id || index} style={{ // Utilisation de l'index comme fallback pour la clé
+    <div style={{ 
+      flex: 1, 
+      overflowY: 'auto', 
+      padding: '1rem', 
+      display: 'flex', 
+      flexDirection: 'column', 
+      gap: '0.75rem',
+      minHeight: 0 // ← IMPORTANT pour le scroll
+    }}>
+      {chatMessages.map((msg) => (
+        <div key={msg.id} style={{
           background: '#374151',
           borderRadius: '0.5rem',
           padding: '0.75rem',
