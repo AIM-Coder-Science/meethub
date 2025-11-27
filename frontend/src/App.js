@@ -30,6 +30,9 @@ const ICE_SERVERS = {
   iceCandidatePoolSize: 10
 };
 
+console.log('Twilio SID:', process.env.REACT_APP_TWILIO_ACCOUNT_SID);
+console.log('Twilio Secret:', process.env.REACT_APP_TWILIO_API_SECRET);
+
 export default function VideoConferenceApp() {
   const [roomId, setRoomId] = useState('');
   const [userName, setUserName] = useState('');
