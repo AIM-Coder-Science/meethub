@@ -789,7 +789,7 @@ export default function VideoConferenceApp() {
 
             {showChat && (
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: 'calc(100vh - 200px)' }}>
                   {chatMessages.map((msg) => (
                     <div key={msg.id} style={{
                       background: '#374151',
