@@ -34,6 +34,16 @@ app.get('/', (req, res) => {
   });
 });
 
+// Route santé pour les tests
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK',
+    rooms: rooms.size,
+    users: users.size,
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Route pour obtenir les informations d'une salle
 app.get('/api/room/:roomId', (req, res) => {
   const { roomId } = req.params;
@@ -42,7 +52,7 @@ app.get('/api/room/:roomId', (req, res) => {
   if (room) {
     res.json({
       roomId,
-      participants: room.participants.length,
+      participants: room.participants.size,
       users: Array.from(room.participants.values()).map(p => ({
         id: p.id,
         name: p.name
