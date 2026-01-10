@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Video, VideoOff, Mic, MicOff, Phone, PhoneOff, MessageSquare, Users, Monitor, Copy, Check, MonitorOff } from 'lucide-react';
+import { Video, VideoOff, Mic, MicOff, Phone, PhoneOff, MessageSquare, Users, Monitor, Copy, Check, MonitorOff, Send, Image as ImageIcon, Paperclip, MoreVertical, Edit2, Trash2, Pin, Heart, ThumbsUp, ThumbsDown, Smile, X, Menu } from 'lucide-react';
 import io from 'socket.io-client';
+import './App.css';
 
 const SOCKET_SERVER_URL = 'https://meethub-khyr.onrender.com';
 
@@ -17,71 +18,31 @@ export default function VideoConferenceApp() {
   const [messageInput, setMessageInput] = useState('');
   const [participants, setParticipants] = useState([]);
   const [remoteStreams, setRemoteStreams] = useState({});
+  const [screenStreams, setScreenStreams] = useState({});
   const [copied, setCopied] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('Déconnecté');
   const [hasJoinedRoom, setHasJoinedRoom] = useState(false);
   const [iceServers, setIceServers] = useState([]);
+  const [editingMessageId, setEditingMessageId] = useState(null);
+  const [editingText, setEditingText] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(null);
+  const [pinnedMessages, setPinnedMessages] = useState([]);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   
   const socketRef = useRef(null);
   const localVideoRef = useRef(null);
   const localStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
   const peersRef = useRef({});
+  const screenPeersRef = useRef({});
   const remoteVideosRef = useRef({});
+  const screenVideosRef = useRef({});
   const chatMessagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
 
-  // Fonction pour redémarrer ICE
-  const restartIceForPeer = (userId) => {
-    const peer = peersRef.current[userId];
-    if (peer && peer.iceConnectionState === 'failed') {
-      console.log(`🔄 Redémarrage ICE pour ${userId}`);
-      
-      peer.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: true,
-        iceRestart: true
-      })
-      .then(offer => peer.setLocalDescription(offer))
-      .then(() => {
-        socketRef.current.emit('offer', {
-          to: userId,
-          offer: peer.localDescription
-        });
-        console.log(`📤 Nouvelle offre ICE envoyée à ${userId}`);
-      })
-      .catch(error => {
-        console.error(`❌ Erreur redémarrage ICE:`, error);
-      });
-    }
-  };
-
-  // Récupérer les credentials TURN
-  useEffect(() => {
-    const fetchTurnCredentials = async () => {
-      try {
-        const response = await fetch('https://meethub-khyr.onrender.com/api/turn-credentials');
-        if (!response.ok) throw new Error('Serveur indisponible');
-        
-        const data = await response.json();
-        if (data.iceServers) {
-          setIceServers(data.iceServers);
-          console.log('✅ Credentials TURN récupérés');
-        }
-      } catch (error) {
-        console.error('❌ Erreur TURN credentials, utilisation STUN publics:', error);
-        // Serveurs STUN publics fiables
-        setIceServers([
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:stun3.l.google.com:19302' },
-          { urls: 'stun:stun4.l.google.com:19302' }
-        ]);
-      }
-    };
-    
-    fetchTurnCredentials();
-  }, []);
+  const emojis = ['❤️', '👍', '👎', '😂', '😮', '😢', '🎉'];
 
   // Auto-scroll chat
   const scrollToBottom = () => {
@@ -91,6 +52,31 @@ export default function VideoConferenceApp() {
   useEffect(() => {
     scrollToBottom();
   }, [chatMessages]);
+
+  // Récupérer les credentials TURN
+  useEffect(() => {
+    const fetchTurnCredentials = async () => {
+      try {
+        const response = await fetch(`${SOCKET_SERVER_URL}/api/turn-credentials`);
+        if (!response.ok) throw new Error('Serveur indisponible');
+        
+        const data = await response.json();
+        if (data.iceServers) {
+          setIceServers(data.iceServers);
+          console.log('✅ Credentials TURN récupérés');
+        }
+      } catch (error) {
+        console.error('❌ Erreur TURN credentials:', error);
+        setIceServers([
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' }
+        ]);
+      }
+    };
+    
+    fetchTurnCredentials();
+  }, []);
 
   const generateRoomId = () => {
     return Math.random().toString(36).substring(2, 10).toUpperCase();
@@ -102,19 +88,19 @@ export default function VideoConferenceApp() {
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(track => track.stop());
       }
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach(track => track.stop());
+      }
       if (socketRef.current) {
         socketRef.current.disconnect();
       }
-      Object.values(peersRef.current).forEach(peer => {
-        if (peer) peer.close();
-      });
+      Object.values(peersRef.current).forEach(peer => peer?.close());
+      Object.values(screenPeersRef.current).forEach(peer => peer?.close());
     };
   }, []);
 
   // Initialiser Socket.io
   useEffect(() => {
-    console.log('🔌 Connexion au serveur:', SOCKET_SERVER_URL);
-    
     socketRef.current = io(SOCKET_SERVER_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
@@ -123,44 +109,43 @@ export default function VideoConferenceApp() {
     });
 
     socketRef.current.on('connect', () => {
-      console.log('✅ Connecté au serveur, ID:', socketRef.current.id);
+      console.log('✅ Connecté au serveur');
       setConnectionStatus('Connecté');
     });
 
     socketRef.current.on('disconnect', () => {
-      console.log('❌ Déconnecté du serveur');
       setConnectionStatus('Déconnecté');
       setHasJoinedRoom(false);
     });
 
-    socketRef.current.on('connect_error', (error) => {
-      console.error('❌ Erreur de connexion:', error);
-      setConnectionStatus('Erreur de connexion');
-    });
-
     socketRef.current.on('existing-users', (users) => {
-      console.log('👥 Utilisateurs existants:', users);
       users.forEach(user => {
-        console.log(`➕ Ajout participant: ${user.name} (${user.id})`);
         addParticipant(user.id, user.name);
         createPeerConnection(user.id, true);
       });
     });
 
     socketRef.current.on('user-joined', (user) => {
-      console.log('✅ Utilisateur rejoint:', user);
       addParticipant(user.id, user.name);
       createPeerConnection(user.id, false);
     });
 
     socketRef.current.on('user-left', (user) => {
-      console.log('👋 Utilisateur parti:', user);
       removeParticipant(user.id);
       if (peersRef.current[user.id]) {
         peersRef.current[user.id].close();
         delete peersRef.current[user.id];
       }
+      if (screenPeersRef.current[user.id]) {
+        screenPeersRef.current[user.id].close();
+        delete screenPeersRef.current[user.id];
+      }
       setRemoteStreams(prev => {
+        const updated = { ...prev };
+        delete updated[user.id];
+        return updated;
+      });
+      setScreenStreams(prev => {
         const updated = { ...prev };
         delete updated[user.id];
         return updated;
@@ -168,73 +153,111 @@ export default function VideoConferenceApp() {
     });
 
     socketRef.current.on('offer', async ({ from, offer }) => {
-      console.log('📨 Offre reçue de:', from);
-      try {
-        let peer = peersRef.current[from];
-        
-        if (!peer) {
-          console.log(`🆕 Création nouvelle connexion pour ${from}`);
-          peer = await createPeerConnection(from, false);
-        }
-        
-        if (peer) {
-          await peer.setRemoteDescription(new RTCSessionDescription(offer));
-          console.log('✅ Description distante définie');
-          
-          const answer = await peer.createAnswer();
-          await peer.setLocalDescription(answer);
-          socketRef.current.emit('answer', { to: from, answer });
-          console.log('📤 Réponse envoyée à:', from);
-        }
-      } catch (error) {
-        console.error('❌ Erreur traitement offre:', error);
+      let peer = peersRef.current[from];
+      if (!peer) {
+        peer = await createPeerConnection(from, false);
+      }
+      if (peer) {
+        await peer.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await peer.createAnswer();
+        await peer.setLocalDescription(answer);
+        socketRef.current.emit('answer', { to: from, answer });
       }
     });
 
     socketRef.current.on('answer', async ({ from, answer }) => {
-      console.log('📨 Réponse reçue de:', from);
-      try {
-        const peer = peersRef.current[from];
-        if (peer) {
-          await peer.setRemoteDescription(new RTCSessionDescription(answer));
-          console.log('✅ Réponse traitée pour:', from);
-        }
-      } catch (error) {
-        console.error('❌ Erreur traitement réponse:', error);
+      const peer = peersRef.current[from];
+      if (peer) {
+        await peer.setRemoteDescription(new RTCSessionDescription(answer));
       }
     });
 
     socketRef.current.on('ice-candidate', async ({ from, candidate }) => {
-      console.log('🧊 Candidat ICE reçu de:', from);
-      try {
-        const peer = peersRef.current[from];
-        if (peer) {
-          if (peer.remoteDescription) {
-            await peer.addIceCandidate(new RTCIceCandidate(candidate));
-            console.log('✅ Candidat ICE ajouté pour:', from);
-          } else {
-            console.log('⏳ Candidat ICE en attente de remoteDescription...');
-            setTimeout(async () => {
-              if (peer.remoteDescription) {
-                await peer.addIceCandidate(new RTCIceCandidate(candidate));
-                console.log('✅ Candidat ICE ajouté (retry) pour:', from);
-              }
-            }, 1000);
-          }
-        }
-      } catch (error) {
-        console.error('❌ Erreur ajout candidat ICE:', error);
+      const peer = peersRef.current[from];
+      if (peer && peer.remoteDescription) {
+        await peer.addIceCandidate(new RTCIceCandidate(candidate));
+      }
+    });
+
+    // Gestion du partage d'écran
+    socketRef.current.on('user-screen-share-start', ({ userId }) => {
+      console.log(`📺 Partage d'écran démarré par ${userId}`);
+      createScreenPeerConnection(userId, false);
+    });
+
+    socketRef.current.on('user-screen-share-stop', ({ userId }) => {
+      console.log(`📺 Partage d'écran arrêté par ${userId}`);
+      if (screenPeersRef.current[userId]) {
+        screenPeersRef.current[userId].close();
+        delete screenPeersRef.current[userId];
+      }
+      setScreenStreams(prev => {
+        const updated = { ...prev };
+        delete updated[userId];
+        return updated;
+      });
+    });
+
+    socketRef.current.on('screen-offer', async ({ from, offer }) => {
+      let peer = screenPeersRef.current[from];
+      if (!peer) {
+        peer = await createScreenPeerConnection(from, false);
+      }
+      if (peer) {
+        await peer.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await peer.createAnswer();
+        await peer.setLocalDescription(answer);
+        socketRef.current.emit('screen-answer', { to: from, answer });
+      }
+    });
+
+    socketRef.current.on('screen-answer', async ({ from, answer }) => {
+      const peer = screenPeersRef.current[from];
+      if (peer) {
+        await peer.setRemoteDescription(new RTCSessionDescription(answer));
+      }
+    });
+
+    socketRef.current.on('screen-ice-candidate', async ({ from, candidate }) => {
+      const peer = screenPeersRef.current[from];
+      if (peer && peer.remoteDescription) {
+        await peer.addIceCandidate(new RTCIceCandidate(candidate));
       }
     });
 
     socketRef.current.on('chat-message', (message) => {
-      console.log('💬 Message reçu:', message);
       setChatMessages(prev => [...prev, message]);
     });
 
     socketRef.current.on('chat-history', (messages) => {
-      console.log('📜 Historique chat:', messages.length, 'messages');
       setChatMessages(messages);
+    });
+
+    socketRef.current.on('pinned-messages', (messages) => {
+      setPinnedMessages(messages);
+    });
+
+    socketRef.current.on('message-edited', ({ messageId, newText }) => {
+      setChatMessages(prev => prev.map(msg => 
+        msg.id === messageId ? { ...msg, text: newText, isEdited: true } : msg
+      ));
+    });
+
+    socketRef.current.on('message-deleted', ({ messageId }) => {
+      setChatMessages(prev => prev.filter(msg => msg.id !== messageId));
+    });
+
+    socketRef.current.on('message-reacted', ({ messageId, reactions }) => {
+      setChatMessages(prev => prev.map(msg => 
+        msg.id === messageId ? { ...msg, reactions } : msg
+      ));
+    });
+
+    socketRef.current.on('message-pinned', ({ messageId, isPinned, pinnedMessages }) => {
+      setChatMessages(prev => prev.map(msg => 
+        msg.id === messageId ? { ...msg, isPinned } : msg
+      ));
+      setPinnedMessages(pinnedMessages);
     });
 
     return () => {
@@ -244,55 +267,40 @@ export default function VideoConferenceApp() {
     };
   }, []);
 
-  // Créer une connexion peer
+  // Créer une connexion peer normale
   const createPeerConnection = async (userId, isInitiator) => {
-    console.log(`🔗 Création connexion avec ${userId} (initiateur: ${isInitiator})`);
-    
     try {
       const configuration = {
         iceServers: iceServers.length > 0 ? iceServers : [
           { urls: 'stun:stun.l.google.com:19302' }
         ],
-        iceCandidatePoolSize: 10,
-        iceTransportPolicy: 'all'
+        iceCandidatePoolSize: 10
       };
       
       const peer = new RTCPeerConnection(configuration);
       peersRef.current[userId] = peer;
 
-      // Ajouter les tracks locaux
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(track => {
           peer.addTrack(track, localStreamRef.current);
-          console.log(`➕ Track ${track.kind} ajouté pour ${userId}`);
         });
       }
 
-      // Gestion des tracks distants
       peer.ontrack = (event) => {
-        console.log(`🎬 Track reçu de ${userId}:`, event.track.kind);
         const stream = event.streams[0];
-        
         if (stream) {
-          setRemoteStreams(prev => ({
-            ...prev,
-            [userId]: stream
-          }));
-
+          setRemoteStreams(prev => ({ ...prev, [userId]: stream }));
           setTimeout(() => {
             const videoElement = remoteVideosRef.current[userId];
             if (videoElement && stream) {
               videoElement.srcObject = stream;
-              console.log(`✅ Stream assigné à ${userId}`);
             }
-          }, 500);
+          }, 100);
         }
       };
 
-      // Candidats ICE
       peer.onicecandidate = (event) => {
         if (event.candidate) {
-          console.log(`🧊 Envoi candidat ICE à ${userId}`);
           socketRef.current.emit('ice-candidate', {
             to: userId,
             candidate: event.candidate
@@ -300,49 +308,82 @@ export default function VideoConferenceApp() {
         }
       };
 
-      // États de connexion
-      peer.onconnectionstatechange = () => {
-        console.log(`🔄 État connexion ${userId}:`, peer.connectionState);
-        if (peer.connectionState === 'connected') {
-          console.log(`🎉 Connexion établie avec ${userId}`);
-        } else if (peer.connectionState === 'failed') {
-          console.log(`❌ Connexion échouée avec ${userId}`);
-        }
-      };
-
-      peer.oniceconnectionstatechange = () => {
-        console.log(`🧊 État ICE ${userId}:`, peer.iceConnectionState);
-        
-        if (peer.iceConnectionState === 'failed') {
-          console.log(`❌ ICE échoué pour ${userId}, tentative de redémarrage...`);
-          setTimeout(() => restartIceForPeer(userId), 2000);
-        } else if (peer.iceConnectionState === 'connected') {
-          console.log(`✅ ICE connecté avec ${userId}`);
-        }
-      };
-
-      // Logique initiateur
       if (isInitiator) {
-        try {
-          console.log(`🎯 Création offre pour ${userId}`);
-          const offer = await peer.createOffer({
-            offerToReceiveAudio: true,
-            offerToReceiveVideo: true
-          });
-          await peer.setLocalDescription(offer);
-          socketRef.current.emit('offer', {
-            to: userId,
-            offer: peer.localDescription
-          });
-          console.log(`📤 Offre envoyée à ${userId}`);
-        } catch (error) {
-          console.error(`❌ Erreur création offre:`, error);
-        }
+        const offer = await peer.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true
+        });
+        await peer.setLocalDescription(offer);
+        socketRef.current.emit('offer', {
+          to: userId,
+          offer: peer.localDescription
+        });
       }
 
       return peer;
     } catch (error) {
-      console.error(`❌ Erreur création peer:`, error);
+      console.error('Erreur création peer:', error);
+      return null;
+    }
+  };
+
+  // Créer une connexion peer pour le partage d'écran
+  const createScreenPeerConnection = async (userId, isInitiator) => {
+    try {
+      const configuration = {
+        iceServers: iceServers.length > 0 ? iceServers : [
+          { urls: 'stun:stun.l.google.com:19302' }
+        ],
+        iceCandidatePoolSize: 10
+      };
+      
+      const peer = new RTCPeerConnection(configuration);
+      screenPeersRef.current[userId] = peer;
+
+      if (isInitiator && screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach(track => {
+          peer.addTrack(track, screenStreamRef.current);
+        });
+      }
+
+      peer.ontrack = (event) => {
+        const stream = event.streams[0];
+        if (stream) {
+          console.log(`📺 Stream d'écran reçu de ${userId}`);
+          setScreenStreams(prev => ({ ...prev, [userId]: stream }));
+          setTimeout(() => {
+            const videoElement = screenVideosRef.current[userId];
+            if (videoElement && stream) {
+              videoElement.srcObject = stream;
+            }
+          }, 100);
+        }
+      };
+
+      peer.onicecandidate = (event) => {
+        if (event.candidate) {
+          socketRef.current.emit('screen-ice-candidate', {
+            to: userId,
+            candidate: event.candidate
+          });
+        }
+      };
+
+      if (isInitiator) {
+        const offer = await peer.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true
+        });
+        await peer.setLocalDescription(offer);
+        socketRef.current.emit('screen-offer', {
+          to: userId,
+          offer: peer.localDescription
+        });
+      }
+
+      return peer;
+    } catch (error) {
+      console.error('Erreur création screen peer:', error);
       return null;
     }
   };
@@ -350,23 +391,16 @@ export default function VideoConferenceApp() {
   const addParticipant = (id, name) => {
     setParticipants(prev => {
       if (prev.find(p => p.id === id)) return prev;
-      console.log(`➕ Participant: ${name} (${id})`);
       return [...prev, { id, name, isLocal: false }];
     });
   };
 
   const removeParticipant = (id) => {
-    console.log(`➖ Participant retiré: ${id}`);
     setParticipants(prev => prev.filter(p => p.id !== id));
-    if (remoteVideosRef.current[id]) {
-      delete remoteVideosRef.current[id];
-    }
   };
 
-  // Démarrer le flux local
   const startLocalStream = async () => {
     try {
-      console.log('🎥 Demande accès média...');
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 1280 },
@@ -385,23 +419,20 @@ export default function VideoConferenceApp() {
         localVideoRef.current.srcObject = stream;
       }
       
-      console.log('✅ Flux local démarré');
       return true;
     } catch (error) {
-      console.error('❌ Erreur accès média:', error);
+      console.error('Erreur accès média:', error);
       alert('Impossible d\'accéder à la caméra/micro.');
       return false;
     }
   };
 
-  // Rejoindre une salle
   const joinRoom = async () => {
     if (!userName.trim() || !roomId.trim()) {
       alert('Veuillez entrer votre nom et un ID de salle');
       return;
     }
 
-    console.log(`🚪 Rejoindre salle: ${roomId}`);
     const success = await startLocalStream();
     if (success) {
       setIsInRoom(true);
@@ -411,10 +442,7 @@ export default function VideoConferenceApp() {
     }
   };
 
-  // Quitter la salle
   const leaveRoom = () => {
-    console.log('🚪 Quitter la salle...');
-    
     [localStreamRef.current, screenStreamRef.current].forEach(stream => {
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
@@ -422,81 +450,178 @@ export default function VideoConferenceApp() {
     });
     
     Object.values(peersRef.current).forEach(peer => peer?.close());
+    Object.values(screenPeersRef.current).forEach(peer => peer?.close());
     peersRef.current = {};
+    screenPeersRef.current = {};
     
     socketRef.current.emit('leave-room', { roomId });
     setIsInRoom(false);
     setParticipants([]);
     setChatMessages([]);
     setRemoteStreams({});
+    setScreenStreams({});
     setIsScreenSharing(false);
     setHasJoinedRoom(false);
   };
 
-  // Toggle vidéo
   const toggleVideo = () => {
     if (localStreamRef.current) {
       const videoTrack = localStreamRef.current.getVideoTracks()[0];
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoOn(videoTrack.enabled);
-        console.log('📹 Vidéo:', videoTrack.enabled ? 'ON' : 'OFF');
+        socketRef.current.emit('toggle-video', { roomId, isVideoOn: videoTrack.enabled });
       }
     }
   };
 
-  // Toggle audio
   const toggleAudio = () => {
     if (localStreamRef.current) {
       const audioTrack = localStreamRef.current.getAudioTracks()[0];
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         setIsAudioOn(audioTrack.enabled);
-        console.log('🎤 Audio:', audioTrack.enabled ? 'ON' : 'OFF');
+        socketRef.current.emit('toggle-audio', { roomId, isAudioOn: audioTrack.enabled });
       }
     }
   };
 
-  // Partage d'écran
   const toggleScreenShare = async () => {
     if (isScreenSharing) {
+      // Arrêter le partage
       if (screenStreamRef.current) {
         screenStreamRef.current.getTracks().forEach(track => track.stop());
+        screenStreamRef.current = null;
       }
-      setIsScreenSharing(false);
       
-      if (localVideoRef.current && localStreamRef.current) {
-        localVideoRef.current.srcObject = localStreamRef.current;
-      }
+      // Fermer les connexions de partage d'écran
+      Object.values(screenPeersRef.current).forEach(peer => peer?.close());
+      screenPeersRef.current = {};
+      
+      setIsScreenSharing(false);
+      socketRef.current.emit('screen-share-stop', { roomId });
     } else {
       try {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: { cursor: "always" },
-          audio: true
+          video: { 
+            cursor: "always",
+            displaySurface: "monitor"
+          },
+          audio: false
         });
         
         screenStreamRef.current = screenStream;
         setIsScreenSharing(true);
         
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = screenStream;
-        }
+        // Notifier les autres participants
+        socketRef.current.emit('screen-share-start', { roomId });
         
+        // Créer des connexions peer pour le partage d'écran avec tous les participants
+        participants.forEach(participant => {
+          if (!participant.isLocal) {
+            createScreenPeerConnection(participant.id, true);
+          }
+        });
+        
+        // Gérer l'arrêt du partage quand l'utilisateur clique sur "Arrêter le partage"
         screenStream.getVideoTracks()[0].onended = () => {
           toggleScreenShare();
         };
       } catch (error) {
-        console.error('❌ Erreur partage écran:', error);
+        console.error('Erreur partage écran:', error);
+        alert('Impossible de partager l\'écran');
       }
     }
   };
 
-  // Envoyer message
-  const sendMessage = () => {
-    if (messageInput.trim() && hasJoinedRoom) {
-      socketRef.current.emit('chat-message', { roomId, message: messageInput });
-      setMessageInput('');
+  const handleFileSelect = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      if (file.size > 10 * 1024 * 1024) {
+        alert('Le fichier est trop volumineux (max 10MB)');
+        return;
+      }
+      setSelectedFile(file);
     }
+  };
+
+  const uploadFile = async () => {
+    if (!selectedFile) return null;
+
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+
+    try {
+      const response = await fetch(`${SOCKET_SERVER_URL}/api/upload`, {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) throw new Error('Upload échoué');
+
+      const data = await response.json();
+      setSelectedFile(null);
+      return data;
+    } catch (error) {
+      console.error('Erreur upload:', error);
+      alert('Erreur lors de l\'upload du fichier');
+      return null;
+    }
+  };
+
+  const sendMessage = async () => {
+    if (!messageInput.trim() && !selectedFile) return;
+    if (!hasJoinedRoom) return;
+
+    let fileData = null;
+    if (selectedFile) {
+      fileData = await uploadFile();
+      if (!fileData) return;
+    }
+
+    socketRef.current.emit('chat-message', { 
+      roomId, 
+      message: messageInput,
+      fileUrl: fileData?.fileUrl,
+      fileName: fileData?.fileName,
+      fileType: fileData?.fileType,
+      fileSize: fileData?.fileSize
+    });
+    
+    setMessageInput('');
+    setSelectedFile(null);
+  };
+
+  const editMessage = (messageId, currentText) => {
+    setEditingMessageId(messageId);
+    setEditingText(currentText);
+  };
+
+  const saveEdit = (messageId) => {
+    if (editingText.trim()) {
+      socketRef.current.emit('edit-message', { 
+        roomId, 
+        messageId, 
+        newText: editingText 
+      });
+    }
+    setEditingMessageId(null);
+    setEditingText('');
+  };
+
+  const deleteMessage = (messageId) => {
+    if (window.confirm('Supprimer ce message ?')) {
+      socketRef.current.emit('delete-message', { roomId, messageId });
+    }
+  };
+
+  const reactToMessage = (messageId, reaction) => {
+    socketRef.current.emit('react-message', { roomId, messageId, reaction });
+    setShowEmojiPicker(null);
+  };
+
+  const pinMessage = (messageId) => {
+    socketRef.current.emit('pin-message', { roomId, messageId });
   };
 
   const copyRoomId = () => {
@@ -505,236 +630,148 @@ export default function VideoConferenceApp() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Page de connexion
+  const formatFileSize = (bytes) => {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  };
+
+  const getFileIcon = (fileType) => {
+    if (fileType?.startsWith('image/')) return '🖼️';
+    if (fileType?.startsWith('audio/')) return '🎵';
+    if (fileType?.startsWith('video/')) return '🎥';
+    if (fileType === 'application/pdf') return '📄';
+    return '📎';
+  };
+
   if (!isInRoom) {
     return (
-      <div style={{
-        minHeight: '100vh',
-        background: 'linear-gradient(135deg, #1e3a8a 0%, #7c3aed 50%, #4f46e5 100%)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '1rem'
-      }}>
-        <div style={{
-          background: 'white',
-          borderRadius: '1rem',
-          boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)',
-          padding: '2rem',
-          maxWidth: '28rem',
-          width: '100%'
-        }}>
-          <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-            <div style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: '4rem',
-              height: '4rem',
-              background: 'linear-gradient(135deg, #3b82f6 0%, #9333ea 100%)',
-              borderRadius: '50%',
-              marginBottom: '1rem'
-            }}>
-              <Video style={{ width: '2rem', height: '2rem', color: 'white' }} />
+      <div className="login-container">
+        <div className="neon-glow"></div>
+        <div className="login-card">
+          <div className="login-header">
+            <div className="logo-container">
+              <Video className="logo-icon" />
+              <div className="logo-rings">
+                <div className="ring ring-1"></div>
+                <div className="ring ring-2"></div>
+                <div className="ring ring-3"></div>
+              </div>
             </div>
-            <h1 style={{ fontSize: '1.875rem', fontWeight: 'bold', color: '#1f2937', marginBottom: '0.5rem' }}>
-              MeetHub Pro
-            </h1>
-            <p style={{ color: '#6b7280' }}>Visioconférence professionnelle</p>
-            <p style={{ fontSize: '0.75rem', color: connectionStatus === 'Connecté' ? '#10b981' : '#ef4444', marginTop: '0.5rem' }}>
-              Status: {connectionStatus}
-            </p>
+            <h1 className="app-title">MeetHub Pro</h1>
+            <p className="app-subtitle">Visioconférence nouvelle génération</p>
+            <div className={`status-badge ${connectionStatus === 'Connecté' ? 'connected' : 'disconnected'}`}>
+              <span className="status-dot"></span>
+              {connectionStatus}
+            </div>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div>
-              <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', color: '#374151', marginBottom: '0.5rem' }}>
-                Votre nom
-              </label>
+          <div className="login-form">
+            <div className="input-group">
+              <label>Votre nom</label>
               <input
                 type="text"
                 value={userName}
                 onChange={(e) => setUserName(e.target.value)}
                 placeholder="Entrez votre nom"
-                style={{
-                  width: '100%',
-                  padding: '0.75rem 1rem',
-                  border: '1px solid #d1d5db',
-                  borderRadius: '0.5rem',
-                  fontSize: '1rem',
-                  outline: 'none'
-                }}
+                className="futuristic-input"
               />
             </div>
 
-            <div>
-              <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', color: '#374151', marginBottom: '0.5rem' }}>
-                ID de la salle
-              </label>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <div className="input-group">
+              <label>ID de la salle</label>
+              <div className="input-with-button">
                 <input
                   type="text"
                   value={roomId}
                   onChange={(e) => setRoomId(e.target.value.toUpperCase())}
-                  placeholder="Entrez ou générez un ID"
-                  style={{
-                    flex: 1,
-                    padding: '0.75rem 1rem',
-                    border: '1px solid #d1d5db',
-                    borderRadius: '0.5rem',
-                    fontSize: '1rem',
-                    outline: 'none'
-                  }}
+                  placeholder="Code de la salle"
+                  className="futuristic-input"
                 />
-                <button
-                  onClick={() => setRoomId(generateRoomId())}
-                  style={{
-                    padding: '0.75rem 1rem',
-                    background: '#e5e7eb',
-                    border: 'none',
-                    borderRadius: '0.5rem',
-                    fontWeight: '500',
-                    cursor: 'pointer'
-                  }}
-                >
+                <button onClick={() => setRoomId(generateRoomId())} className="generate-btn">
                   Générer
                 </button>
               </div>
             </div>
 
-            <button
-              onClick={joinRoom}
-              style={{
-                width: '100%',
-                padding: '0.75rem',
-                background: 'linear-gradient(135deg, #3b82f6 0%, #9333ea 100%)',
-                color: 'white',
-                border: 'none',
-                borderRadius: '0.5rem',
-                fontWeight: '600',
-                fontSize: '1rem',
-                cursor: 'pointer',
-                boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)'
-              }}
-            >
-              Rejoindre la salle
+            <button onClick={joinRoom} className="join-btn">
+              <span>Rejoindre la salle</span>
+              <div className="btn-glow"></div>
             </button>
           </div>
 
-          <div style={{ marginTop: '1.5rem', textAlign: 'center', fontSize: '0.875rem', color: '#6b7280' }}>
-            <p>✓ Jusqu'à 50-100 participants</p>
-            <p>✓ Chat • Vidéo HD • Audio clair</p>
-            <p>✓ Partage d'écran inclus</p>
+          <div className="features-list">
+            <div className="feature">✓ 100+ participants</div>
+            <div className="feature">✓ Qualité HD</div>
+            <div className="feature">✓ Partage d'écran</div>
+            <div className="feature">✓ Chat avancé</div>
           </div>
         </div>
       </div>
     );
   }
 
-  // Interface de visioconférence
   return (
-    <div style={{ height: '100vh', background: '#111827', display: 'flex', flexDirection: 'column' }}>
-      {/* En-tête */}
-      <div style={{
-        background: '#1f2937',
-        padding: '1rem 1.5rem',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        borderBottom: '1px solid #374151'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <h1 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'white' }}>MeetHub Pro</h1>
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            background: '#374151',
-            padding: '0.5rem 0.75rem',
-            borderRadius: '0.5rem'
-          }}>
-            <span style={{ color: '#d1d5db', fontSize: '0.875rem' }}>Salle: {roomId}</span>
-            <button onClick={copyRoomId} style={{
-              background: 'transparent',
-              border: 'none',
-              color: '#9ca3af',
-              cursor: 'pointer',
-              padding: '0.25rem'
-            }}>
-              {copied ? <Check style={{ width: '1rem', height: '1rem' }} /> : <Copy style={{ width: '1rem', height: '1rem' }} />}
+    <div className="video-room">
+      {/* Header */}
+      <header className="room-header">
+        <div className="header-left">
+          <button className="mobile-menu-btn" onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>
+            <Menu />
+          </button>
+          <h1 className="room-title">MeetHub Pro</h1>
+          <div className="room-id-badge">
+            <span>Salle: {roomId}</span>
+            <button onClick={copyRoomId} className="copy-btn">
+              {copied ? <Check size={14} /> : <Copy size={14} />}
             </button>
           </div>
         </div>
-        <button
-          onClick={() => setShowParticipants(!showParticipants)}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            background: '#374151',
-            padding: '0.5rem 1rem',
-            borderRadius: '0.5rem',
-            color: 'white',
-            border: 'none',
-            cursor: 'pointer'
-          }}
-        >
-          <Users style={{ width: '1.25rem', height: '1.25rem' }} />
+        <button onClick={() => setShowParticipants(!showParticipants)} className="participants-btn">
+          <Users size={20} />
           <span>{participants.length}</span>
         </button>
-      </div>
+      </header>
 
-      {/* Zone principale */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {/* Vidéos */}
-        <div style={{ flex: 1, padding: '1rem', overflowY: 'auto' }}>
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-            gap: '1rem'
-          }}>
-            {/* Vidéo locale */}
-            <div style={{ position: 'relative', background: '#1f2937', borderRadius: '0.5rem', overflow: 'hidden', aspectRatio: '16/9' }}>
+      {/* Main Content */}
+      <div className="room-content">
+        {/* Videos Grid */}
+        <div className="videos-section">
+          {/* Pinned Messages */}
+          {pinnedMessages.length > 0 && (
+            <div className="pinned-messages-banner">
+              <Pin size={16} />
+              <span>{pinnedMessages[pinnedMessages.length - 1].text}</span>
+            </div>
+          )}
+
+          <div className="videos-grid">
+            {/* Local Video */}
+            <div className="video-tile local-video">
               <video
                 ref={localVideoRef}
                 autoPlay
                 muted
                 playsInline
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                className="video-element"
               />
-              <div style={{
-                position: 'absolute',
-                bottom: '0.75rem',
-                left: '0.75rem',
-                background: 'rgba(0,0,0,0.6)',
-                padding: '0.25rem 0.75rem',
-                borderRadius: '9999px'
-              }}>
-                <span style={{ color: 'white', fontSize: '0.875rem', fontWeight: '500' }}>{userName} (Vous)</span>
+              <div className="video-overlay">
+                <span className="participant-name">{userName} (Vous)</span>
+                <div className="video-indicators">
+                  {!isVideoOn && <VideoOff size={16} />}
+                  {!isAudioOn && <MicOff size={16} />}
+                </div>
               </div>
               {!isVideoOn && !isScreenSharing && (
-                <div style={{
-                  position: 'absolute',
-                  inset: 0,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  background: '#374151'
-                }}>
-                  <VideoOff style={{ width: '3rem', height: '3rem', color: '#9ca3af' }} />
+                <div className="video-off-placeholder">
+                  <VideoOff size={48} />
                 </div>
               )}
             </div>
 
-            {/* Vidéos des autres participants */}
+            {/* Remote Videos */}
             {participants.filter(p => !p.isLocal).map((participant) => (
-              <div key={participant.id} style={{
-                position: 'relative',
-                background: '#1f2937',
-                borderRadius: '0.5rem',
-                overflow: 'hidden',
-                aspectRatio: '16/9'
-              }}>
+              <div key={participant.id} className="video-tile">
                 <video
                   ref={el => {
                     remoteVideosRef.current[participant.id] = el;
@@ -744,273 +781,269 @@ export default function VideoConferenceApp() {
                   }}
                   autoPlay
                   playsInline
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  className="video-element"
                 />
-                <div style={{
-                  position: 'absolute',
-                  bottom: '0.75rem',
-                  left: '0.75rem',
-                  background: 'rgba(0,0,0,0.6)',
-                  padding: '0.25rem 0.75rem',
-                  borderRadius: '9999px'
-                }}>
-                  <span style={{ color: 'white', fontSize: '0.875rem', fontWeight: '500' }}>{participant.name}</span>
+                <div className="video-overlay">
+                  <span className="participant-name">{participant.name}</span>
                 </div>
                 {!remoteStreams[participant.id] && (
-                  <div style={{
-                    position: 'absolute',
-                    inset: 0,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)'
-                  }}>
-                    <div style={{ color: 'white', fontSize: '2.25rem', fontWeight: 'bold' }}>
+                  <div className="video-off-placeholder">
+                    <div className="avatar-placeholder">
                       {participant.name.charAt(0).toUpperCase()}
                     </div>
                   </div>
                 )}
               </div>
             ))}
+
+            {/* Screen Shares */}
+            {Object.entries(screenStreams).map(([userId, stream]) => {
+              const participant = participants.find(p => p.id === userId);
+              return (
+                <div key={`screen-${userId}`} className="video-tile screen-share-tile">
+                  <video
+                    ref={el => {
+                      screenVideosRef.current[userId] = el;
+                      if (el && stream) {
+                        el.srcObject = stream;
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    className="video-element"
+                  />
+                  <div className="video-overlay">
+                    <Monitor size={16} />
+                    <span className="participant-name">
+                      Écran de {participant?.name || 'Participant'}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
-        {/* Panneau latéral */}
-        {(showChat || showParticipants) && (
-          <div style={{
-            width: '20rem',
-            background: '#1f2937',
-            borderLeft: '1px solid #374151',
-            display: 'flex',
-            flexDirection: 'column',
-            height: '100%'
-          }}>
-            <div style={{ display: 'flex', borderBottom: '1px solid #374151' }}>
-              <button
-                onClick={() => { setShowChat(true); setShowParticipants(false); }}
-                style={{
-                  flex: 1,
-                  padding: '0.75rem 1rem',
-                  fontSize: '0.875rem',
-                  fontWeight: '500',
-                  background: showChat ? '#374151' : 'transparent',
-                  color: showChat ? 'white' : '#9ca3af',
-                  border: 'none',
-                  cursor: 'pointer'
-                }}
-              >
-                Chat
-              </button>
-              <button
-                onClick={() => { setShowParticipants(true); setShowChat(false); }}
-                style={{
-                  flex: 1,
-                  padding: '0.75rem 1rem',
-                  fontSize: '0.875rem',
-                  fontWeight: '500',
-                  background: showParticipants ? '#374151' : 'transparent',
-                  color: showParticipants ? 'white' : '#9ca3af',
-                  border: 'none',
-                  cursor: 'pointer'
-                }}
-              >
-                Participants
-              </button>
-            </div>
-
-            {showChat && (
-              <div style={{ 
-                flex: 1, 
-                display: 'flex', 
-                flexDirection: 'column',
-                minHeight: 0
-              }}>
-                {/* Messages avec scroll */}
-                <div style={{
-                  flex: 1,
-                  overflowY: 'auto',
-                  padding: '1rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '0.75rem',
-                  minHeight: 0
+        {/* Chat/Participants Sidebar */}
+        {(showChat || showParticipants || isMobileMenuOpen) && (
+          <>
+            <div className="sidebar-overlay" onClick={() => {
+              setShowChat(false);
+              setShowParticipants(false);
+              setIsMobileMenuOpen(false);
+            }}></div>
+            <div className={`sidebar ${isMobileMenuOpen ? 'mobile-open' : ''}`}>
+              <div className="sidebar-tabs">
+                <button 
+                  className={`tab ${showChat ? 'active' : ''}`}
+                  onClick={() => { setShowChat(true); setShowParticipants(false); }}
+                >
+                  Chat
+                </button>
+                <button 
+                  className={`tab ${showParticipants ? 'active' : ''}`}
+                  onClick={() => { setShowParticipants(true); setShowChat(false); }}
+                >
+                  Participants
+                </button>
+                <button className="close-sidebar-btn" onClick={() => {
+                  setShowChat(false);
+                  setShowParticipants(false);
+                  setIsMobileMenuOpen(false);
                 }}>
-                  {chatMessages.map((msg) => (
-                    <div key={msg.id} style={{
-                      background: '#374151',
-                      borderRadius: '0.5rem',
-                      padding: '0.75rem',
-                      flexShrink: 0
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
-                        <span style={{ fontSize: '0.875rem', fontWeight: '500', color: '#60a5fa' }}>{msg.sender}</span>
-                        <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
-                          {new Date(msg.time).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-                        </span>
+                  <X size={20} />
+                </button>
+              </div>
+
+              {showChat && (
+                <div className="chat-container">
+                  <div className="messages-list">
+                    {chatMessages.map((msg) => (
+                      <div key={msg.id} className={`message ${msg.senderId === socketRef.current?.id ? 'own-message' : ''}`}>
+                        <div className="message-header">
+                          <span className="message-sender">{msg.sender}</span>
+                          <span className="message-time">
+                            {new Date(msg.time).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+
+                        {editingMessageId === msg.id ? (
+                          <div className="message-edit">
+                            <input
+                              type="text"
+                              value={editingText}
+                              onChange={(e) => setEditingText(e.target.value)}
+                              className="edit-input"
+                              autoFocus
+                            />
+                            <div className="edit-actions">
+                              <button onClick={() => saveEdit(msg.id)} className="save-btn">✓</button>
+                              <button onClick={() => setEditingMessageId(null)} className="cancel-btn">✕</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="message-content">
+                              <p>{msg.text}</p>
+                              {msg.isEdited && <span className="edited-badge">(modifié)</span>}
+                              
+                              {msg.fileUrl && (
+                                <div className="message-file">
+                                  <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer" className="file-link">
+                                    <span className="file-icon">{getFileIcon(msg.fileType)}</span>
+                                    <div className="file-info">
+                                      <span className="file-name">{msg.fileName}</span>
+                                      <span className="file-size">{formatFileSize(msg.fileSize)}</span>
+                                    </div>
+                                  </a>
+                                  {msg.fileType?.startsWith('image/') && (
+                                    <img src={msg.fileUrl} alt={msg.fileName} className="message-image" />
+                                  )}
+                                  {msg.fileType?.startsWith('audio/') && (
+                                    <audio src={msg.fileUrl} controls className="message-audio" />
+                                  )}
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="message-actions">
+                              {msg.isPinned && <Pin size={14} className="pinned-icon" />}
+                              
+                              <div className="reactions">
+                                {Object.entries(msg.reactions || {}).map(([emoji, users]) => 
+                                  users.length > 0 && (
+                                    <button 
+                                      key={emoji}
+                                      className={`reaction ${users.includes(socketRef.current?.id) ? 'active' : ''}`}
+                                      onClick={() => reactToMessage(msg.id, emoji)}
+                                    >
+                                      {emoji} {users.length}
+                                    </button>
+                                  )
+                                )}
+                                
+                                <button 
+                                  className="add-reaction-btn"
+                                  onClick={() => setShowEmojiPicker(showEmojiPicker === msg.id ? null : msg.id)}
+                                >
+                                  <Smile size={14} />
+                                </button>
+                                
+                                {showEmojiPicker === msg.id && (
+                                  <div className="emoji-picker">
+                                    {emojis.map(emoji => (
+                                      <button 
+                                        key={emoji}
+                                        onClick={() => reactToMessage(msg.id, emoji)}
+                                        className="emoji-btn"
+                                      >
+                                        {emoji}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+
+                              {msg.senderId === socketRef.current?.id && (
+                                <div className="message-menu">
+                                  <button onClick={() => editMessage(msg.id, msg.text)} className="action-btn">
+                                    <Edit2 size={14} />
+                                  </button>
+                                  <button onClick={() => deleteMessage(msg.id)} className="action-btn">
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                              )}
+                              
+                              <button onClick={() => pinMessage(msg.id)} className="action-btn">
+                                <Pin size={14} />
+                              </button>
+                            </div>
+                          </>
+                        )}
                       </div>
-                      <p style={{ fontSize: '0.875rem', color: '#e5e7eb', margin: 0, wordBreak: 'break-word' }}>
-                        {msg.text}
-                      </p>
-                    </div>
-                  ))}
-                  <div ref={chatMessagesEndRef} />
-                </div>
+                    ))}
+                    <div ref={chatMessagesEndRef} />
+                  </div>
 
-                {/* Input message */}
-                <div style={{ 
-                  padding: '1rem', 
-                  borderTop: '1px solid #374151',
-                  background: '#1f2937',
-                  flexShrink: 0
-                }}>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <input
-                      type="text"
-                      value={messageInput}
-                      onChange={(e) => setMessageInput(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                      placeholder="Écrivez un message..."
-                      style={{
-                        flex: 1,
-                        padding: '0.5rem 0.75rem',
-                        background: '#374151',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '0.5rem',
-                        outline: 'none'
-                      }}
-                    />
-                    <button
-                      onClick={sendMessage}
-                      style={{
-                        padding: '0.5rem 1rem',
-                        background: '#2563eb',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '0.5rem',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Envoyer
-                    </button>
+                  <div className="chat-input-container">
+                    {selectedFile && (
+                      <div className="file-preview">
+                        <span>{getFileIcon(selectedFile.type)} {selectedFile.name}</span>
+                        <button onClick={() => setSelectedFile(null)} className="remove-file-btn">
+                          <X size={14} />
+                        </button>
+                      </div>
+                    )}
+                    
+                    <div className="chat-input">
+                      <input
+                        type="text"
+                        value={messageInput}
+                        onChange={(e) => setMessageInput(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                        placeholder="Écrivez un message..."
+                        className="message-input"
+                      />
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        onChange={handleFileSelect}
+                        style={{ display: 'none' }}
+                        accept="image/*,audio/*,video/*,.pdf"
+                      />
+                      <button onClick={() => fileInputRef.current?.click()} className="attach-btn">
+                        <Paperclip size={20} />
+                      </button>
+                      <button onClick={sendMessage} className="send-btn">
+                        <Send size={20} />
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {showParticipants && (
-              <div style={{ flex: 1, overflowY: 'auto', padding: '1rem' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              {showParticipants && (
+                <div className="participants-list">
                   {participants.map((participant) => (
-                    <div key={participant.id} style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.75rem',
-                      padding: '0.75rem',
-                      background: '#374151',
-                      borderRadius: '0.5rem'
-                    }}>
-                      <div style={{
-                        width: '2.5rem',
-                        height: '2.5rem',
-                        borderRadius: '50%',
-                        background: 'linear-gradient(135deg, #3b82f6 0%, #9333ea 100%)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        color: 'white',
-                        fontWeight: 'bold'
-                      }}>
+                    <div key={participant.id} className="participant-item">
+                      <div className="participant-avatar">
                         {participant.name.charAt(0).toUpperCase()}
                       </div>
-                      <div style={{ flex: 1 }}>
-                        <p style={{ color: 'white', fontWeight: '500' }}>{participant.name}</p>
-                        {participant.isLocal && <p style={{ fontSize: '0.75rem', color: '#9ca3af' }}>Vous</p>}
+                      <div className="participant-info">
+                        <span className="participant-name">{participant.name}</span>
+                        {participant.isLocal && <span className="you-badge">Vous</span>}
                       </div>
                     </div>
                   ))}
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          </>
         )}
       </div>
 
-      {/* Contrôles */}
-      <div style={{
-        background: '#1f2937',
-        padding: '1rem 1.5rem',
-        borderTop: '1px solid #374151'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1rem' }}>
-          <button
-            onClick={toggleVideo}
-            style={{
-              padding: '1rem',
-              borderRadius: '50%',
-              background: isVideoOn ? '#374151' : '#dc2626',
-              color: 'white',
-              border: 'none',
-              cursor: 'pointer'
-            }}
-          >
-            {isVideoOn ? <Video style={{ width: '1.5rem', height: '1.5rem' }} /> : <VideoOff style={{ width: '1.5rem', height: '1.5rem' }} />}
+      {/* Controls */}
+      <div className="controls-bar">
+        <div className="controls-group">
+          <button onClick={toggleVideo} className={`control-btn ${!isVideoOn ? 'danger' : ''}`}>
+            {isVideoOn ? <Video size={24} /> : <VideoOff size={24} />}
           </button>
           
-          <button
-            onClick={toggleAudio}
-            style={{
-              padding: '1rem',
-              borderRadius: '50%',
-              background: isAudioOn ? '#374151' : '#dc2626',
-              color: 'white',
-              border: 'none',
-              cursor: 'pointer'
-            }}
-          >
-            {isAudioOn ? <Mic style={{ width: '1.5rem', height: '1.5rem' }} /> : <MicOff style={{ width: '1.5rem', height: '1.5rem' }} />}
+          <button onClick={toggleAudio} className={`control-btn ${!isAudioOn ? 'danger' : ''}`}>
+            {isAudioOn ? <Mic size={24} /> : <MicOff size={24} />}
           </button>
 
-          <button
-            onClick={toggleScreenShare}
-            style={{
-              padding: '1rem',
-              borderRadius: '50%',
-              background: isScreenSharing ? '#2563eb' : '#374151',
-              color: 'white',
-              border: 'none',
-              cursor: 'pointer'
-            }}
-          >
-            {isScreenSharing ? <MonitorOff style={{ width: '1.5rem', height: '1.5rem' }} /> : <Monitor style={{ width: '1.5rem', height: '1.5rem' }} />}
+          <button onClick={toggleScreenShare} className={`control-btn ${isScreenSharing ? 'active' : ''}`}>
+            {isScreenSharing ? <MonitorOff size={24} /> : <Monitor size={24} />}
           </button>
 
-          <button
-            onClick={() => setShowChat(!showChat)}
-            style={{
-              padding: '1rem',
-              borderRadius: '50%',
-              background: showChat ? '#2563eb' : '#374151',
-              color: 'white',
-              border: 'none',
-              cursor: 'pointer'
-            }}
-          >
-            <MessageSquare style={{ width: '1.5rem', height: '1.5rem' }} />
+          <button onClick={() => setShowChat(!showChat)} className={`control-btn ${showChat ? 'active' : ''}`}>
+            <MessageSquare size={24} />
           </button>
 
-          <button
-            onClick={leaveRoom}
-            style={{
-              padding: '1rem',
-              borderRadius: '50%',
-              background: '#dc2626',
-              color: 'white',
-              border: 'none',
-              cursor: 'pointer'
-            }}
-          >
-            <PhoneOff style={{ width: '1.5rem', height: '1.5rem' }} />
+          <button onClick={leaveRoom} className="control-btn danger leave-btn">
+            <PhoneOff size={24} />
           </button>
         </div>
       </div>

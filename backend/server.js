@@ -3,22 +3,56 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
 
-// Configuration CORS pour permettre les connexions depuis votre frontend
+// Configuration du stockage des fichiers
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = 'uploads/';
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    cb(null, `${Date.now()}-${file.originalname}`);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png|gif|pdf|mp3|wav|ogg|webm|mp4/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+    
+    if (mimetype && extname) {
+      return cb(null, true);
+    }
+    cb(new Error('Type de fichier non autorisé'));
+  }
+});
+
+// Configuration CORS
 const io = socketIo(server, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"],
     credentials: true
   },
-  transports: ['websocket', 'polling']
+  transports: ['websocket', 'polling'],
+  maxHttpBufferSize: 1e8 // 100MB pour les fichiers
 });
 
 app.use(cors());
 app.use(express.json());
+app.use('/uploads', express.static('uploads'));
 
 // Structure pour stocker les salles et les utilisateurs
 const rooms = new Map();
@@ -27,14 +61,14 @@ const users = new Map();
 // Route de test
 app.get('/', (req, res) => {
   res.json({ 
-    message: 'Serveur de visioconférence actif',
+    message: 'Serveur de visioconférence MeetHub Pro actif',
     rooms: rooms.size,
     users: users.size,
     timestamp: new Date().toISOString()
   });
 });
 
-// Route santé pour les tests
+// Route santé
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK',
@@ -63,35 +97,62 @@ app.get('/api/room/:roomId', (req, res) => {
   }
 });
 
-// Route de diagnostic TURN
-app.get('/api/debug-turn', (req, res) => {
-  res.json({
-    status: 'Serveur TURN configuré avec services alternatifs',
-    services: [
-      'STUN Google',
-      'TURN publics (openrelay)',
-      'TURN Xirsys (gratuit)'
-    ]
-  });
+// Upload de fichiers
+app.post('/api/upload', upload.single('file'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Aucun fichier fourni' });
+    }
+    
+    const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+    res.json({
+      success: true,
+      fileUrl,
+      fileName: req.file.originalname,
+      fileSize: req.file.size,
+      fileType: req.file.mimetype
+    });
+  } catch (error) {
+    console.error('Erreur upload:', error);
+    res.status(500).json({ error: 'Erreur lors de l\'upload' });
+  }
 });
 
-// Route pour générer les credentials TURN - SOLUTION ALTERNATIVE
+// Route pour générer les credentials TURN
 app.get('/api/turn-credentials', (req, res) => {
   console.log('🔐 Demande de credentials TURN reçue');
   
-  // CONFIGURATION AVEC SERVICES TURN ALTERNATIFS FIABLES
   const credentials = {
     iceServers: [
-      // === STUN SERVERS (publics et fiables) ===
+      // STUN Google (fiable et gratuit)
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun2.l.google.com:19302' },
       { urls: 'stun:stun3.l.google.com:19302' },
       { urls: 'stun:stun4.l.google.com:19302' },
+      
+      // STUN publics alternatifs
       { urls: 'stun:stun.voipbuster.com:3478' },
       { urls: 'stun:stun.voipstunt.com:3478' },
       
-      // === TURN SERVERS PUBLIC (openrelay - gratuit) ===
+      // TURN Twilio (ajoutez vos credentials ici)
+      { 
+        urls: 'turn:global.turn.twilio.com:3478?transport=udp',
+        username: 'TWILIO_ACCOUNT_SID',
+        credential: 'TWILIO_AUTH_TOKEN'
+      },
+      { 
+        urls: 'turn:global.turn.twilio.com:3478?transport=tcp',
+        username: 'TWILIO_ACCOUNT_SID',
+        credential: 'TWILIO_AUTH_TOKEN'
+     },
+     { 
+       urls: 'turn:global.turn.twilio.com:443?transport=tcp',
+       username: 'TWILIO_ACCOUNT_SID',
+       credential: 'TWILIO_AUTH_TOKEN'
+     },
+      
+      // TURN openrelay (gratuit)
       { 
         urls: 'turn:openrelay.metered.ca:80',
         username: 'openrelayproject',
@@ -108,19 +169,7 @@ app.get('/api/turn-credentials', (req, res) => {
         credential: 'openrelayproject'
       },
       
-      // === TURN SERVERS Xirsys (service gratuit) ===
-      {
-        urls: "turn:turn.xten.com:3478?transport=udp",
-        username: "matt",
-        credential: "guest"
-      },
-      {
-        urls: "turn:turn.xten.com:3478?transport=tcp", 
-        username: "matt",
-        credential: "guest"
-      },
-      
-      // === VOTRE CONFIGURATION METERED (en dernier recours) ===
+      // TURN metered.ca
       { 
         urls: 'turn:global.relay.metered.ca:80',
         username: 'd4682bb48701b55009b58f1c',
@@ -130,14 +179,17 @@ app.get('/api/turn-credentials', (req, res) => {
         urls: 'turn:global.relay.metered.ca:443',
         username: 'd4682bb48701b55009b58f1c',
         credential: 'Ujx2pj32ryDG3G1R'
+      },
+      { 
+        urls: 'turn:global.relay.metered.ca:443?transport=tcp',
+        username: 'd4682bb48701b55009b58f1c',
+        credential: 'Ujx2pj32ryDG3G1R'
       }
     ]
   };
 
-  console.log('✅ Configuration TURN alternative générée');
+  console.log('✅ Configuration TURN générée');
   console.log(`   Nombre total de serveurs ICE: ${credentials.iceServers.length}`);
-  console.log(`   STUN: 7 serveurs Google et publics`);
-  console.log(`   TURN: 5 serveurs publics alternatifs`);
   
   res.json(credentials);
 });
@@ -155,24 +207,20 @@ io.on('connection', (socket) => {
     console.log(`   Room: ${roomId}`);
     console.log(`   Socket: ${socket.id}`);
 
-    // Vérifier si l'utilisateur est déjà dans une salle
     const existingUser = users.get(socket.id);
     if (existingUser && existingUser.roomId !== roomId) {
       console.log(`   🔄 Utilisateur déjà dans une autre salle, nettoyage...`);
       
-      // Quitter l'ancienne salle
       const oldRoom = rooms.get(existingUser.roomId);
       if (oldRoom) {
         oldRoom.participants.delete(socket.id);
         socket.leave(existingUser.roomId);
         
-        // Notifier les autres participants
         socket.to(existingUser.roomId).emit('user-left', {
           id: socket.id,
           name: existingUser.name
         });
         
-        // Supprimer l'ancienne salle si vide
         if (oldRoom.participants.size === 0) {
           rooms.delete(existingUser.roomId);
           console.log(`   🗑️ Ancienne salle ${existingUser.roomId} supprimée`);
@@ -180,28 +228,25 @@ io.on('connection', (socket) => {
       }
     }
 
-    // Créer la salle si elle n'existe pas
     if (!rooms.has(roomId)) {
       console.log(`   ✨ Création de la salle ${roomId}`);
       rooms.set(roomId, {
         id: roomId,
         participants: new Map(),
-        messages: []
+        messages: [],
+        pinnedMessages: []
       });
     }
 
     const room = rooms.get(roomId);
     
-    // Récupérer les utilisateurs déjà présents AVANT d'ajouter le nouveau
     const existingUsers = Array.from(room.participants.values()).map(p => ({
       id: p.id,
       name: p.name
     }));
     
     console.log(`   👥 Utilisateurs déjà présents: ${existingUsers.length}`);
-    existingUsers.forEach(u => console.log(`      - ${u.name} (${u.id})`));
 
-    // Ajouter l'utilisateur à la salle
     const userInfo = {
       id: socket.id,
       name: userName,
@@ -211,148 +256,156 @@ io.on('connection', (socket) => {
     room.participants.set(socket.id, userInfo);
     users.set(socket.id, userInfo);
     
-    // Rejoindre la room Socket.io
     socket.join(roomId);
     console.log(`   ✅ ${userName} a rejoint la salle ${roomId}`);
 
-    // Envoyer la liste des participants existants au nouvel arrivant
-    console.log(`   📤 Envoi de la liste des utilisateurs existants à ${userName}`);
     socket.emit('existing-users', existingUsers);
 
-    // Notifier TOUS les autres utilisateurs (sauf celui qui vient de rejoindre)
-    console.log(`   📢 Notification aux autres utilisateurs`);
     socket.to(roomId).emit('user-joined', {
       id: socket.id,
       name: userName
     });
 
-    // Envoyer l'historique des messages
     socket.emit('chat-history', room.messages);
-    console.log(`   📜 Historique envoyé: ${room.messages.length} messages`);
-
-    // Confirmation de connexion à la room
+    socket.emit('pinned-messages', room.pinnedMessages);
+    
     socket.emit('join-room-confirmation', {
       roomId,
       userName,
       success: true,
       timestamp: new Date().toISOString()
     });
-    console.log(`   ✅ Confirmation join-room envoyée`);
 
     console.log(`   📊 État de la salle ${roomId}: ${room.participants.size} participants`);
   });
 
-  // Signalisation WebRTC - Offre
+  // Signalisation WebRTC
   socket.on('offer', ({ to, offer }) => {
-    console.log(`\n📨 OFFRE WebRTC`);
-    console.log(`   De: ${socket.id}`);
-    console.log(`   À: ${to}`);
-    
-    const targetUser = users.get(to);
-    if (!targetUser) {
-      console.log(`   ❌ Utilisateur cible ${to} non trouvé`);
-      return;
-    }
-    
-    io.to(to).emit('offer', {
-      from: socket.id,
-      offer: offer
-    });
-    console.log(`   ✅ Offre transmise`);
+    console.log(`\n📨 OFFRE WebRTC: ${socket.id} → ${to}`);
+    io.to(to).emit('offer', { from: socket.id, offer });
   });
 
-  // Signalisation WebRTC - Réponse
   socket.on('answer', ({ to, answer }) => {
-    console.log(`\n📨 RÉPONSE WebRTC`);
-    console.log(`   De: ${socket.id}`);
-    console.log(`   À: ${to}`);
-    
-    const targetUser = users.get(to);
-    if (!targetUser) {
-      console.log(`   ❌ Utilisateur cible ${to} non trouvé`);
-      return;
-    }
-    
-    io.to(to).emit('answer', {
-      from: socket.id,
-      answer: answer
-    });
-    console.log(`   ✅ Réponse transmise`);
+    console.log(`\n📨 RÉPONSE WebRTC: ${socket.id} → ${to}`);
+    io.to(to).emit('answer', { from: socket.id, answer });
   });
 
-  // Signalisation WebRTC - Candidat ICE
   socket.on('ice-candidate', ({ to, candidate }) => {
     console.log(`🧊 ICE CANDIDATE: ${socket.id} → ${to}`);
-    
-    const targetUser = users.get(to);
-    if (!targetUser) {
-      console.log(`   ❌ Utilisateur cible ${to} non trouvé`);
-      return;
-    }
-    
-    io.to(to).emit('ice-candidate', {
-      from: socket.id,
-      candidate: candidate
-    });
+    io.to(to).emit('ice-candidate', { from: socket.id, candidate });
   });
 
   // Message de chat
-  socket.on('chat-message', ({ roomId, message }) => {
+  socket.on('chat-message', ({ roomId, message, fileUrl, fileName, fileType, fileSize }) => {
     console.log(`\n💬 MESSAGE CHAT`);
     console.log(`   Room: ${roomId}`);
     console.log(`   Texte: ${message}`);
     console.log(`   De: ${socket.id}`);
     
     const user = users.get(socket.id);
-    if (!user) {
-      console.log(`   ❌ Utilisateur non trouvé`);
-      return;
-    }
+    if (!user) return;
 
     const room = rooms.get(roomId);
-    if (!room) {
-      console.log(`   ❌ Salle ${roomId} non trouvée`);
-      return;
-    }
-
-    // Vérifier que l'utilisateur est bien dans cette salle
-    if (!room.participants.has(socket.id)) {
-      console.log(`   ❌ Utilisateur ${socket.id} n'est pas dans la salle ${roomId}`);
-      return;
-    }
+    if (!room || !room.participants.has(socket.id)) return;
 
     const chatMessage = {
-      id: Date.now(),
+      id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       sender: user.name,
       senderId: socket.id,
       text: message,
-      time: new Date().toISOString()
+      fileUrl,
+      fileName,
+      fileType,
+      fileSize,
+      time: new Date().toISOString(),
+      reactions: {},
+      isPinned: false,
+      isEdited: false
     };
 
-    // Sauvegarder le message dans la salle
     room.messages.push(chatMessage);
-    // Limiter l'historique à 100 messages
-    if (room.messages.length > 100) {
+    if (room.messages.length > 200) {
       room.messages.shift();
     }
-    console.log(`   💾 Message sauvegardé dans la salle`);
 
-    // Diffuser le message à TOUS les participants de la salle (y compris l'expéditeur)
-    console.log(`   📢 Diffusion du message à toute la salle ${roomId}`);
     io.to(roomId).emit('chat-message', chatMessage);
-    console.log(`   ✅ Message diffusé`);
+  });
+
+  // Éditer un message
+  socket.on('edit-message', ({ roomId, messageId, newText }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+
+    const message = room.messages.find(m => m.id === messageId);
+    if (message && message.senderId === socket.id) {
+      message.text = newText;
+      message.isEdited = true;
+      io.to(roomId).emit('message-edited', { messageId, newText });
+    }
+  });
+
+  // Supprimer un message
+  socket.on('delete-message', ({ roomId, messageId }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+
+    const messageIndex = room.messages.findIndex(m => m.id === messageId);
+    if (messageIndex !== -1 && room.messages[messageIndex].senderId === socket.id) {
+      room.messages.splice(messageIndex, 1);
+      io.to(roomId).emit('message-deleted', { messageId });
+    }
+  });
+
+  // Réaction à un message
+  socket.on('react-message', ({ roomId, messageId, reaction }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+
+    const message = room.messages.find(m => m.id === messageId);
+    if (message) {
+      if (!message.reactions[reaction]) {
+        message.reactions[reaction] = [];
+      }
+      
+      const userIndex = message.reactions[reaction].indexOf(socket.id);
+      if (userIndex === -1) {
+        message.reactions[reaction].push(socket.id);
+      } else {
+        message.reactions[reaction].splice(userIndex, 1);
+      }
+      
+      io.to(roomId).emit('message-reacted', { 
+        messageId, 
+        reactions: message.reactions 
+      });
+    }
+  });
+
+  // Épingler un message
+  socket.on('pin-message', ({ roomId, messageId }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+
+    const message = room.messages.find(m => m.id === messageId);
+    if (message) {
+      message.isPinned = !message.isPinned;
+      
+      if (message.isPinned) {
+        room.pinnedMessages.push(message);
+      } else {
+        room.pinnedMessages = room.pinnedMessages.filter(m => m.id !== messageId);
+      }
+      
+      io.to(roomId).emit('message-pinned', { 
+        messageId, 
+        isPinned: message.isPinned,
+        pinnedMessages: room.pinnedMessages
+      });
+    }
   });
 
   // Toggle vidéo
   socket.on('toggle-video', ({ roomId, isVideoOn }) => {
-    console.log(`📹 TOGGLE VIDEO: ${socket.id} → ${isVideoOn}`);
-    
-    const room = rooms.get(roomId);
-    if (!room || !room.participants.has(socket.id)) {
-      console.log(`   ❌ Salle ou utilisateur non valide`);
-      return;
-    }
-    
     socket.to(roomId).emit('user-video-toggle', {
       userId: socket.id,
       isVideoOn
@@ -361,14 +414,6 @@ io.on('connection', (socket) => {
 
   // Toggle audio
   socket.on('toggle-audio', ({ roomId, isAudioOn }) => {
-    console.log(`🎤 TOGGLE AUDIO: ${socket.id} → ${isAudioOn}`);
-    
-    const room = rooms.get(roomId);
-    if (!room || !room.participants.has(socket.id)) {
-      console.log(`   ❌ Salle ou utilisateur non valide`);
-      return;
-    }
-    
     socket.to(roomId).emit('user-audio-toggle', {
       userId: socket.id,
       isAudioOn
@@ -378,30 +423,28 @@ io.on('connection', (socket) => {
   // Partage d'écran
   socket.on('screen-share-start', ({ roomId }) => {
     console.log(`🖥️ PARTAGE ÉCRAN DÉMARRÉ: ${socket.id}`);
-    
-    const room = rooms.get(roomId);
-    if (!room || !room.participants.has(socket.id)) {
-      console.log(`   ❌ Salle ou utilisateur non valide`);
-      return;
-    }
-    
-    socket.to(roomId).emit('user-screen-share-start', {
-      userId: socket.id
-    });
+    socket.to(roomId).emit('user-screen-share-start', { userId: socket.id });
   });
 
   socket.on('screen-share-stop', ({ roomId }) => {
     console.log(`🖥️ PARTAGE ÉCRAN ARRÊTÉ: ${socket.id}`);
-    
-    const room = rooms.get(roomId);
-    if (!room || !room.participants.has(socket.id)) {
-      console.log(`   ❌ Salle ou utilisateur non valide`);
-      return;
-    }
-    
-    socket.to(roomId).emit('user-screen-share-stop', {
-      userId: socket.id
-    });
+    socket.to(roomId).emit('user-screen-share-stop', { userId: socket.id });
+  });
+
+  // Offre de partage d'écran
+  socket.on('screen-offer', ({ to, offer }) => {
+    console.log(`📺 OFFRE ÉCRAN: ${socket.id} → ${to}`);
+    io.to(to).emit('screen-offer', { from: socket.id, offer });
+  });
+
+  socket.on('screen-answer', ({ to, answer }) => {
+    console.log(`📺 RÉPONSE ÉCRAN: ${socket.id} → ${to}`);
+    io.to(to).emit('screen-answer', { from: socket.id, answer });
+  });
+
+  socket.on('screen-ice-candidate', ({ to, candidate }) => {
+    console.log(`🧊 ICE ÉCRAN: ${socket.id} → ${to}`);
+    io.to(to).emit('screen-ice-candidate', { from: socket.id, candidate });
   });
 
   // Déconnexion
@@ -417,19 +460,14 @@ io.on('connection', (socket) => {
       if (room) {
         room.participants.delete(socket.id);
         
-        // Notifier les autres participants
         socket.to(roomId).emit('user-left', {
           id: socket.id,
           name: name
         });
-        console.log(`   📢 Autres participants notifiés dans ${roomId}`);
 
-        // Supprimer la salle si elle est vide
         if (room.participants.size === 0) {
           rooms.delete(roomId);
           console.log(`   🗑️ Salle ${roomId} supprimée (vide)`);
-        } else {
-          console.log(`   📊 Salle ${roomId}: ${room.participants.size} participants restants`);
         }
       }
 
@@ -453,13 +491,9 @@ io.on('connection', (socket) => {
           id: socket.id,
           name: user.name
         });
-        console.log(`   📢 Notification envoyée aux autres participants`);
 
         if (room.participants.size === 0) {
           rooms.delete(roomId);
-          console.log(`   🗑️ Salle ${roomId} supprimée (vide)`);
-        } else {
-          console.log(`   📊 Salle ${roomId}: ${room.participants.size} participants restants`);
         }
       }
       
@@ -467,20 +501,18 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Gestion des erreurs
   socket.on('error', (error) => {
     console.error(`❌ ERREUR SOCKET ${socket.id}:`, error);
   });
 });
 
-// Nettoyage périodique des salles vides (toutes les 5 minutes)
+// Nettoyage périodique
 setInterval(() => {
   let cleanedCount = 0;
   const now = Date.now();
   
   for (const [roomId, room] of rooms.entries()) {
     if (room.participants.size === 0) {
-      // Vérifier aussi si la salle est ancienne (plus de 1 heure sans activité)
       const lastActivity = room.messages.length > 0 
         ? new Date(room.messages[room.messages.length - 1].time).getTime()
         : now;
@@ -521,10 +553,9 @@ server.listen(PORT, () => {
   console.log(`╚═══════════════════════════════════════╝`);
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌐 WebSocket: Prêt`);
-  console.log(`🔐 TURN: Services alternatifs configurés`);
+  console.log(`🔐 TURN: Services configurés`);
   console.log(`⏰ Heure: ${new Date().toLocaleString('fr-FR')}`);
   console.log(`\n✅ En attente de connexions...\n`);
 });
 
-// Export pour les tests
 module.exports = { app, server, io, rooms, users };
