@@ -1016,23 +1016,17 @@ export default function VideoConferenceApp() {
   };
 
   const sendMessage = async () => {
-    if (!messageInput.trim() && !selectedFile) return;
+    if (!messageInput.trim()) return; // Pas de fichiers, seulement du texte
     if (!hasJoinedRoom) return;
-
-    let fileData = null;
-    if (selectedFile) {
-      fileData = await uploadFile();
-      if (!fileData) return;
-    }
 
     console.log('💬 Envoi du message...');
     socketRef.current.emit('chat-message', { 
       roomId, 
       message: messageInput,
-      fileUrl: fileData?.fileUrl,
-      fileName: fileData?.fileName,
-      fileType: fileData?.fileType,
-      fileSize: fileData?.fileSize
+      fileUrl: null,
+      fileName: null,
+      fileType: null,
+      fileSize: null
     });
     
     setMessageInput('');
@@ -1381,7 +1375,20 @@ export default function VideoConferenceApp() {
       
       <header className="room-header">
         <div className="header-left">
-          <button className="mobile-menu-btn" onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>
+          <button className="mobile-menu-btn" onClick={() => {
+            const shouldOpen = !isMobileMenuOpen;
+            setIsMobileMenuOpen(shouldOpen);
+            if (shouldOpen) {
+              // Si on ouvre le menu, afficher le chat par défaut
+              setActiveTab('chat');
+              setShowChat(true);
+              setShowParticipants(false);
+            } else {
+              // Si on ferme, tout fermer
+              setShowChat(false);
+              setShowParticipants(false);
+            }
+          }}>
             <Menu />
           </button>
           <h1 className="room-title">MeetHub Pro</h1>
@@ -1392,7 +1399,16 @@ export default function VideoConferenceApp() {
             </button>
           </div>
         </div>
-        <button onClick={() => { setShowParticipants(!showParticipants); setActiveTab('participants'); }} className="participants-btn">
+        <button onClick={() => { 
+          setShowParticipants(!showParticipants); 
+          setActiveTab('participants');
+          setShowChat(false);
+          // Sur mobile, ouvrir le menu
+          const isMobile = window.innerWidth <= 480;
+          if (isMobile && !showParticipants) {
+            setIsMobileMenuOpen(true);
+          }
+        }} className="participants-btn">
           <Users size={20} />
           <span>{participants.length}</span>
         </button>
@@ -1645,17 +1661,35 @@ export default function VideoConferenceApp() {
               setShowParticipants(false);
               setIsMobileMenuOpen(false);
             }}></div>
-            <div className={`sidebar ${isMobileMenuOpen ? 'mobile-open' : ''}`}>
+            <div className={`sidebar ${(isMobileMenuOpen || showChat || showParticipants) ? 'mobile-open' : ''}`}>
               <div className="sidebar-tabs">
                 <button 
                   className={`tab ${activeTab === 'chat' ? 'active' : ''}`}
-                  onClick={() => { setActiveTab('chat'); setShowChat(true); setShowParticipants(false); }}
+                  onClick={() => { 
+                    setActiveTab('chat'); 
+                    setShowChat(true); 
+                    setShowParticipants(false);
+                    // Sur mobile, s'assurer que le menu est ouvert
+                    const isMobile = window.innerWidth <= 900;
+                    if (isMobile) {
+                      setIsMobileMenuOpen(true);
+                    }
+                  }}
                 >
                   Chat
                 </button>
                 <button 
                   className={`tab ${activeTab === 'participants' ? 'active' : ''}`}
-                  onClick={() => { setActiveTab('participants'); setShowParticipants(true); setShowChat(false); }}
+                  onClick={() => { 
+                    setActiveTab('participants'); 
+                    setShowParticipants(true); 
+                    setShowChat(false);
+                    // Sur mobile, s'assurer que le menu est ouvert
+                    const isMobile = window.innerWidth <= 900;
+                    if (isMobile) {
+                      setIsMobileMenuOpen(true);
+                    }
+                  }}
                 >
                   Participants
                 </button>
@@ -1781,7 +1815,8 @@ export default function VideoConferenceApp() {
                   </div>
 
                   <div className="chat-input-container">
-                    {selectedFile && (
+                    {/* Prévisualisation de fichier désactivée */}
+                    {false && selectedFile && (
                       <div className="file-preview">
                         <span>{getFileIcon(selectedFile.type)} {selectedFile.name}</span>
                         <button onClick={() => setSelectedFile(null)} className="remove-file-btn">
@@ -1799,17 +1834,20 @@ export default function VideoConferenceApp() {
                         placeholder="Écrivez un message..."
                         className="message-input"
                       />
+                      {/* Désactivation de l'envoi de fichiers - bouton caché */}
                       <input
                         type="file"
                         ref={fileInputRef}
                         onChange={handleFileSelect}
                         style={{ display: 'none' }}
                         accept="image/*,audio/*,video/*,.pdf"
+                        disabled
                       />
-                      <button onClick={() => fileInputRef.current?.click()} className="attach-btn" title="Joindre un fichier">
+                      {/* Bouton d'attachement désactivé et caché */}
+                      {/* <button onClick={() => fileInputRef.current?.click()} className="attach-btn" title="Joindre un fichier" style={{ display: 'none' }}>
                         <Paperclip size={20} />
-                      </button>
-                      <button onClick={sendMessage} className="send-btn" disabled={!messageInput.trim() && !selectedFile}>
+                      </button> */}
+                      <button onClick={sendMessage} className="send-btn" disabled={!messageInput.trim()}>
                         <Send size={20} />
                       </button>
                     </div>
@@ -1871,7 +1909,19 @@ export default function VideoConferenceApp() {
             {isScreenSharing ? <MonitorOff size={24} /> : <Monitor size={24} />}
           </button>
 
-          <button onClick={() => { setShowChat(!showChat); setActiveTab('chat'); }} className={`control-btn ${showChat ? 'active' : ''}`} title="Ouvrir le chat">
+          <button onClick={() => { 
+            const shouldShow = !showChat;
+            setShowChat(shouldShow);
+            setActiveTab('chat');
+            setShowParticipants(false);
+            // Sur mobile, ouvrir aussi le menu
+            const isMobile = window.innerWidth <= 900;
+            if (isMobile && shouldShow) {
+              setIsMobileMenuOpen(true);
+            } else if (!shouldShow) {
+              setIsMobileMenuOpen(false);
+            }
+          }} className={`control-btn ${showChat ? 'active' : ''}`} title="Ouvrir le chat">
             <MessageSquare size={24} />
           </button>
 

@@ -683,6 +683,31 @@ html, body {
   flex-direction: column;
   box-shadow: -4px 0 12px rgba(0, 0, 0, 0.2);
   z-index: 100;
+  position: relative;
+}
+
+/* Sur mobile et tablette, le sidebar est fixe */
+@media (max-width: 900px) {
+  .sidebar-overlay {
+    display: block;
+  }
+  
+  .sidebar {
+    position: fixed;
+    right: -100%;
+    top: 0;
+    bottom: 0;
+    width: 100%;
+    max-width: 340px;
+    transition: right 0.3s ease-out;
+    border-radius: 0;
+    border-left: none;
+    z-index: 200;
+  }
+  
+  .sidebar.mobile-open {
+    right: 0;
+  }
 }
 
 .sidebar-tabs {
@@ -1850,6 +1875,7 @@ html, body {
     transition: right 0.3s ease-out;
     border-radius: 0;
     border-left: none;
+    z-index: 200;
   }
   
   .sidebar.mobile-open {
