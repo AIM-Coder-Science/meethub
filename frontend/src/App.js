@@ -33,6 +33,12 @@ export default function VideoConferenceApp() {
   const [activeTab, setActiveTab] = useState('chat');
   const [userVideoStatus, setUserVideoStatus] = useState({}); // {userId: isVideoOn}
   const [notification, setNotification] = useState(null);
+  const [isCreator, setIsCreator] = useState(false);
+  const [mediaState, setMediaState] = useState(null); // { type, url, isPlaying, currentTime, lastUpdatedServerTime, pageNumber }
+  const [showMediaPlayer, setShowMediaPlayer] = useState(false);
+  const mediaPlayerRef = useRef(null);
+  const mediaSyncThreshold = 2000; // 2 secondes
+  const isReceivingRemoteUpdate = useRef(false);
   
   const socketRef = useRef(null);
   const localVideoRef = useRef(null);
@@ -148,8 +154,127 @@ export default function VideoConferenceApp() {
 
     socketRef.current.on('user-joined', (user) => {
       console.log('👤 Nouvel utilisateur:', user);
-      addParticipant(user.id, user.name);
+      addParticipant(user.id, user.name, user.isCreator);
       createPeerConnection(user.id, false);
+    });
+
+    socketRef.current.on('join-room-confirmation', ({ roomId, userName, success, isCreator: creatorStatus, timestamp }) => {
+      if (success) {
+        setIsCreator(creatorStatus || false);
+        console.log(`✅ Rejoint la salle ${roomId}, créateur: ${creatorStatus || false}`);
+        
+        // Demander l'état initial du média
+        if (socketRef.current) {
+          socketRef.current.emit('get-media-state', { roomId });
+        }
+      }
+    });
+
+    // Gestion des médias synchronisés
+    socketRef.current.on('media-action', ({ action, type, url, currentTime, pageNumber, lastUpdatedServerTime, isPlaying }) => {
+      console.log('🎬 Action média reçue:', action, type);
+      
+      isReceivingRemoteUpdate.current = true;
+      
+      if (action === 'load') {
+        setMediaState({
+          type,
+          url,
+          isPlaying: false,
+          currentTime: 0,
+          lastUpdatedServerTime: lastUpdatedServerTime || Date.now(),
+          pageNumber: type === 'pdf' ? (pageNumber || 1) : null
+        });
+        setShowMediaPlayer(true);
+      } else if (action === 'play' || action === 'pause' || action === 'seek') {
+        if (mediaPlayerRef.current && mediaState) {
+          const player = mediaPlayerRef.current;
+          const timeDiff = Date.now() - (lastUpdatedServerTime || Date.now());
+          const adjustedTime = currentTime + (timeDiff / 1000); // Convertir en secondes
+          
+          // Seulement forcer le seek si la différence est > 2 secondes (seuil de synchronisation)
+          if (Math.abs(player.currentTime - adjustedTime) > mediaSyncThreshold / 1000) {
+            player.currentTime = adjustedTime;
+          }
+          
+          if (action === 'play' && !isPlaying) {
+            player.play().catch(err => console.error('Erreur play:', err));
+          } else if (action === 'pause' || action === 'seek') {
+            player.pause();
+          }
+          
+          setMediaState(prev => ({
+            ...prev,
+            isPlaying: action === 'play',
+            currentTime: adjustedTime,
+            lastUpdatedServerTime: lastUpdatedServerTime || Date.now()
+          }));
+        }
+      } else if (action === 'page-change' && type === 'pdf') {
+        setMediaState(prev => ({
+          ...prev,
+          pageNumber: pageNumber || 1,
+          lastUpdatedServerTime: lastUpdatedServerTime || Date.now()
+        }));
+        
+        // Mettre à jour le PDF viewer
+        if (mediaPlayerRef.current && mediaPlayerRef.current.src) {
+          const iframe = document.querySelector('.pdf-viewer');
+          if (iframe) {
+            iframe.src = `${mediaState?.url || ''}#page=${pageNumber || 1}`;
+          }
+        }
+      } else if (action === 'stop') {
+        setMediaState(null);
+        setShowMediaPlayer(false);
+        if (mediaPlayerRef.current) {
+          mediaPlayerRef.current.pause();
+          mediaPlayerRef.current.src = '';
+        }
+      }
+      
+      setTimeout(() => {
+        isReceivingRemoteUpdate.current = false;
+      }, 100);
+    });
+
+    socketRef.current.on('media-state-update', (state) => {
+      console.log('🎬 État média initial reçu:', state);
+      if (!mediaState && state) {
+        setMediaState(state);
+        setShowMediaPlayer(true);
+      }
+    });
+
+    // Permissions du créateur : contrôler les autres utilisateurs
+    socketRef.current.on('remote-media-control', ({ action, value, controlledBy }) => {
+      console.log(`👑 Contrôle distant: ${action} = ${value} par ${controlledBy}`);
+      
+      if (action === 'toggle-video' || action === 'mute-video') {
+        if (localStreamRef.current) {
+          const videoTrack = localStreamRef.current.getVideoTracks()[0];
+          if (videoTrack) {
+            videoTrack.enabled = value !== false;
+            setIsVideoOn(videoTrack.enabled);
+          }
+        }
+      } else if (action === 'toggle-audio' || action === 'mute-audio') {
+        if (localStreamRef.current) {
+          const audioTrack = localStreamRef.current.getAudioTracks()[0];
+          if (audioTrack) {
+            audioTrack.enabled = value !== false;
+            setIsAudioOn(audioTrack.enabled);
+          }
+        }
+      }
+      
+      setNotification({
+        message: `${controlledBy} a ${action === 'toggle-video' || action === 'mute-video' ? (value ? 'activé' : 'désactivé') : (value ? 'activé' : 'désactivé')} votre ${action.includes('video') ? 'caméra' : 'micro'}`,
+        type: 'info',
+        timestamp: Date.now()
+      });
+      
+      setTimeout(() => setNotification(null), 3000);
     });
 
     socketRef.current.on('user-left', (user) => {
@@ -398,7 +523,17 @@ export default function VideoConferenceApp() {
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(track => {
           console.log(`🎯 Ajout track ${track.kind} (enabled: ${track.enabled}) à peer ${userId}`);
-          peer.addTrack(track, localStreamRef.current);
+          try {
+            peer.addTrack(track, localStreamRef.current);
+            console.log(`✅ Track ${track.kind} ajouté avec succès à peer ${userId}`);
+          } catch (error) {
+            console.error(`❌ Erreur ajout track ${track.kind} à peer ${userId}:`, error);
+            // Essayer d'ajouter avec replaceTrack si le track existe déjà
+            const sender = peer.getSenders().find(s => s.track && s.track.kind === track.kind);
+            if (sender) {
+              sender.replaceTrack(track).catch(err => console.error('Erreur replaceTrack:', err));
+            }
+          }
         });
       }
 
@@ -570,11 +705,11 @@ export default function VideoConferenceApp() {
     }
   };
 
-  const addParticipant = (id, name) => {
+  const addParticipant = (id, name, isCreator = false) => {
     setParticipants(prev => {
       if (prev.find(p => p.id === id)) return prev;
-      console.log(`👤 Participant ajouté: ${name} (${id})`);
-      return [...prev, { id, name, isLocal: false }];
+      console.log(`👤 Participant ajouté: ${name} (${id}), créateur: ${isCreator}`);
+      return [...prev, { id, name, isLocal: false, isCreator }];
     });
   };
 
@@ -748,10 +883,41 @@ export default function VideoConferenceApp() {
     if (localStreamRef.current) {
       const audioTrack = localStreamRef.current.getAudioTracks()[0];
       if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled;
-        setIsAudioOn(audioTrack.enabled);
-        console.log(`🎤 Audio ${audioTrack.enabled ? 'activé' : 'désactivé'}`);
-        socketRef.current.emit('toggle-audio', { roomId, isAudioOn: audioTrack.enabled });
+        const newState = !audioTrack.enabled;
+        audioTrack.enabled = newState;
+        setIsAudioOn(newState);
+        console.log(`🎤 Audio ${newState ? 'activé' : 'désactivé'}`);
+        
+        // Mettre à jour tous les peers avec le nouveau track audio
+        Object.entries(peersRef.current).forEach(([userId, peer]) => {
+          if (peer) {
+            const senders = peer.getSenders();
+            const sender = senders.find(s => s.track && s.track.kind === 'audio');
+            if (sender && sender.track) {
+              sender.track.enabled = newState;
+            }
+            
+            // Si le track est activé, s'assurer qu'il est bien dans la connexion
+            if (newState && audioTrack) {
+              const hasTrack = senders.some(s => s.track && s.track.id === audioTrack.id);
+              if (!hasTrack) {
+                peer.addTrack(audioTrack, localStreamRef.current);
+                // Recréer l'offer si nécessaire
+                peer.createOffer().then(offer => {
+                  peer.setLocalDescription(offer);
+                  socketRef.current.emit('offer', {
+                    to: userId,
+                    offer: peer.localDescription
+                  });
+                }).catch(err => console.error('Erreur création offer audio:', err));
+              }
+            }
+          }
+        });
+        
+        socketRef.current.emit('toggle-audio', { roomId, isAudioOn: newState });
+      } else {
+        console.warn('⚠️ Aucun track audio trouvé');
       }
     }
   };
@@ -926,6 +1092,155 @@ export default function VideoConferenceApp() {
     setShowMessageMenu(null);
   };
 
+  // Gestion des médias (seul le créateur peut contrôler)
+  const loadMedia = async (file) => {
+    if (!isCreator) {
+      alert('Seul le créateur de la salle peut partager des médias');
+      return;
+    }
+
+    if (!file) return;
+
+    const fileType = file.type;
+    let mediaType = null;
+    
+    if (fileType.startsWith('video/')) mediaType = 'video';
+    else if (fileType.startsWith('audio/')) mediaType = 'audio';
+    else if (fileType === 'application/pdf') mediaType = 'pdf';
+    else {
+      alert('Type de fichier non supporté. Utilisez vidéo, audio ou PDF.');
+      return;
+    }
+
+    // Uploader le fichier
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch(`${SOCKET_SERVER_URL}/api/upload`, {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) throw new Error('Upload échoué');
+      const data = await response.json();
+
+      // Envoyer l'action load au serveur
+      socketRef.current.emit('media-action', {
+        roomId,
+        action: 'load',
+        type: mediaType,
+        url: data.fileUrl
+      });
+
+      setMediaState({
+        type: mediaType,
+        url: data.fileUrl,
+        isPlaying: false,
+        currentTime: 0,
+        lastUpdatedServerTime: Date.now(),
+        pageNumber: mediaType === 'pdf' ? 1 : null
+      });
+      setShowMediaPlayer(true);
+    } catch (error) {
+      console.error('Erreur upload média:', error);
+      alert('Erreur lors du chargement du média');
+    }
+  };
+
+  const handleMediaPlay = () => {
+    if (!isCreator || !mediaPlayerRef.current) return;
+    
+    if (isReceivingRemoteUpdate.current) return; // Éviter la boucle de feedback
+    
+    const player = mediaPlayerRef.current;
+    const currentTime = player.currentTime || 0;
+    
+    socketRef.current.emit('media-action', {
+      roomId,
+      action: 'play',
+      type: mediaState?.type,
+      currentTime
+    });
+
+    setMediaState(prev => ({
+      ...prev,
+      isPlaying: true,
+      currentTime,
+      lastUpdatedServerTime: Date.now()
+    }));
+  };
+
+  const handleMediaPause = () => {
+    if (!isCreator || !mediaPlayerRef.current) return;
+    
+    if (isReceivingRemoteUpdate.current) return;
+    
+    const player = mediaPlayerRef.current;
+    const currentTime = player.currentTime || 0;
+    
+    socketRef.current.emit('media-action', {
+      roomId,
+      action: 'pause',
+      type: mediaState?.type,
+      currentTime
+    });
+
+    setMediaState(prev => ({
+      ...prev,
+      isPlaying: false,
+      currentTime,
+      lastUpdatedServerTime: Date.now()
+    }));
+  };
+
+  const handleMediaSeek = (time) => {
+    if (!isCreator || !mediaPlayerRef.current) return;
+    
+    if (isReceivingRemoteUpdate.current) return;
+    
+    socketRef.current.emit('media-action', {
+      roomId,
+      action: 'seek',
+      type: mediaState?.type,
+      currentTime: time
+    });
+
+    setMediaState(prev => ({
+      ...prev,
+      currentTime: time,
+      isPlaying: false,
+      lastUpdatedServerTime: Date.now()
+    }));
+  };
+
+  const stopMedia = () => {
+    if (!isCreator) return;
+    
+    socketRef.current.emit('media-action', {
+      roomId,
+      action: 'stop'
+    });
+
+    setMediaState(null);
+    setShowMediaPlayer(false);
+  };
+
+  // Contrôle des autres utilisateurs (créateur uniquement)
+  const controlUserMedia = (targetUserId, action, value) => {
+    if (!isCreator) {
+      alert('Seul le créateur peut contrôler les autres participants');
+      return;
+    }
+
+    socketRef.current.emit('control-user-media', {
+      roomId,
+      targetUserId,
+      action,
+      value
+    });
+  };
+
   const pinMessage = (messageId) => {
     console.log('📌 Épinglage du message:', messageId);
     socketRef.current.emit('pin-message', { roomId, messageId });
@@ -1092,6 +1407,128 @@ export default function VideoConferenceApp() {
             </div>
           )}
 
+          {/* Lecteur de médias synchronisé */}
+          {showMediaPlayer && mediaState && (
+            <div className="media-player-container">
+              <div className="media-player-header">
+                <span>Média partagé {isCreator && '(Vous contrôlez)'}</span>
+                {isCreator && (
+                  <button onClick={stopMedia} className="close-media-btn" title="Arrêter le média">
+                    <X size={18} />
+                  </button>
+                )}
+              </div>
+              <div className="media-player-content">
+                {mediaState.type === 'video' && (
+                  <video
+                    ref={mediaPlayerRef}
+                    src={mediaState.url}
+                    controls
+                    onPlay={handleMediaPlay}
+                    onPause={handleMediaPause}
+                    onSeeked={(e) => handleMediaSeek(e.target.currentTime)}
+                    onTimeUpdate={(e) => {
+                      if (!isReceivingRemoteUpdate.current && isCreator && mediaState) {
+                        // Ne pas envoyer de mises à jour trop fréquentes
+                        const now = Date.now();
+                        const timeSinceLastUpdate = now - (mediaState.lastUpdatedServerTime || 0);
+                        if (timeSinceLastUpdate > 500) { // Mettre à jour toutes les 500ms
+                          // Ne rien faire ici, la synchronisation est gérée par les événements play/pause/seek
+                        }
+                      }
+                    }}
+                    className="media-player-element"
+                  />
+                )}
+                {mediaState.type === 'audio' && (
+                  <audio
+                    ref={mediaPlayerRef}
+                    src={mediaState.url}
+                    controls
+                    onPlay={handleMediaPlay}
+                    onPause={handleMediaPause}
+                    onSeeked={(e) => handleMediaSeek(e.target.currentTime)}
+                    onTimeUpdate={(e) => {
+                      if (!isReceivingRemoteUpdate.current && isCreator && mediaState) {
+                        // Ne pas envoyer de mises à jour trop fréquentes
+                        const now = Date.now();
+                        const timeSinceLastUpdate = now - (mediaState.lastUpdatedServerTime || 0);
+                        if (timeSinceLastUpdate > 500) { // Mettre à jour toutes les 500ms
+                          // Ne rien faire ici, la synchronisation est gérée par les événements play/pause/seek
+                        }
+                      }
+                    }}
+                    className="media-player-audio"
+                  />
+                )}
+                {mediaState.type === 'pdf' && (
+                  <div className="media-player-pdf">
+                    <iframe
+                      ref={mediaPlayerRef}
+                      src={`${mediaState.url}#page=${mediaState.pageNumber || 1}`}
+                      className="pdf-viewer"
+                      title="PDF Viewer"
+                      key={`pdf-${mediaState.pageNumber || 1}`}
+                    />
+                    <div className="pdf-controls">
+                      <button onClick={() => {
+                        if (isReceivingRemoteUpdate.current) return;
+                        const newPage = Math.max(1, (mediaState.pageNumber || 1) - 1);
+                        if (isCreator && newPage !== (mediaState.pageNumber || 1)) {
+                          socketRef.current.emit('media-action', {
+                            roomId,
+                            action: 'page-change',
+                            type: 'pdf',
+                            pageNumber: newPage
+                          });
+                          setMediaState(prev => ({ ...prev, pageNumber: newPage, lastUpdatedServerTime: Date.now() }));
+                        }
+                      }} disabled={!isCreator || (mediaState.pageNumber || 1) <= 1}>
+                        ← Page précédente
+                      </button>
+                      <span>Page {mediaState.pageNumber || 1}</span>
+                      <button onClick={() => {
+                        if (isReceivingRemoteUpdate.current) return;
+                        const newPage = (mediaState.pageNumber || 1) + 1;
+                        if (isCreator) {
+                          socketRef.current.emit('media-action', {
+                            roomId,
+                            action: 'page-change',
+                            type: 'pdf',
+                            pageNumber: newPage
+                          });
+                          setMediaState(prev => ({ ...prev, pageNumber: newPage, lastUpdatedServerTime: Date.now() }));
+                        }
+                      }} disabled={!isCreator}>
+                        Page suivante →
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Bouton pour charger un média (créateur uniquement) */}
+          {isCreator && !showMediaPlayer && (
+            <div className="media-upload-section">
+              <input
+                type="file"
+                id="media-upload"
+                accept="video/*,audio/*,.pdf"
+                onChange={(e) => {
+                  const file = e.target.files[0];
+                  if (file) loadMedia(file);
+                  e.target.value = ''; // Réinitialiser pour permettre de sélectionner le même fichier
+                }}
+                style={{ display: 'none' }}
+              />
+              <label htmlFor="media-upload" className="media-upload-btn">
+                📁 Partager un média (vidéo, audio ou PDF)
+              </label>
+            </div>
+          )}
+
           <div className="videos-grid">
             {/* Local Video */}
             <div className="video-tile local-video">
@@ -1123,18 +1560,28 @@ export default function VideoConferenceApp() {
               const hasVideo = remoteStreams[participant.id] && userVideoStatus[participant.id] !== false;
               const stream = remoteStreams[participant.id];
               const videoDisabled = userVideoStatus[participant.id] === false;
+              const audioDisabled = stream && stream.getAudioTracks().length > 0 && !stream.getAudioTracks()[0].enabled;
               
               return (
                 <div key={participant.id} className="video-tile">
                   <video
                     ref={el => {
+                      if (!el) return;
                       remoteVideosRef.current[participant.id] = el;
-                      if (el && stream) {
+                      if (stream) {
                         el.srcObject = stream;
+                        el.muted = false; // Important : ne pas muter pour entendre l'audio
                         // Mettre à jour l'état enabled des tracks
                         if (stream.getVideoTracks().length > 0) {
                           stream.getVideoTracks().forEach(track => {
                             track.enabled = !videoDisabled;
+                          });
+                        }
+                        // S'assurer que les tracks audio sont actifs
+                        if (stream.getAudioTracks().length > 0) {
+                          stream.getAudioTracks().forEach(track => {
+                            // Les tracks audio sont gérés par l'utilisateur distant
+                            console.log(`🎤 Audio track ${participant.id}: enabled=${track.enabled}`);
                           });
                         }
                       }
@@ -1149,7 +1596,7 @@ export default function VideoConferenceApp() {
                     <span className="participant-name">{participant.name}</span>
                     <div className="video-indicators">
                       {videoDisabled && <VideoOff size={16} />}
-                      {stream && stream.getAudioTracks().length > 0 && !stream.getAudioTracks()[0].enabled && <MicOff size={16} />}
+                      {audioDisabled && <MicOff size={16} />}
                     </div>
                   </div>
                   {(!stream || videoDisabled) && (
@@ -1380,7 +1827,27 @@ export default function VideoConferenceApp() {
                       <div className="participant-info">
                         <span className="participant-name">{participant.name}</span>
                         {participant.isLocal && <span className="you-badge">Vous</span>}
+                        {participant.isCreator && <span className="creator-badge">👑 Créateur</span>}
                       </div>
+                      {/* Contrôles du créateur */}
+                      {isCreator && !participant.isLocal && (
+                        <div className="participant-controls">
+                          <button
+                            onClick={() => controlUserMedia(participant.id, 'toggle-video', !userVideoStatus[participant.id])}
+                            className="control-participant-btn"
+                            title={`${userVideoStatus[participant.id] === false ? 'Activer' : 'Désactiver'} la caméra`}
+                          >
+                            <Video size={16} />
+                          </button>
+                          <button
+                            onClick={() => controlUserMedia(participant.id, 'toggle-audio', true)}
+                            className="control-participant-btn"
+                            title="Désactiver le micro"
+                          >
+                            <Mic size={16} />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

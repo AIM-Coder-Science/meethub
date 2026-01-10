@@ -28,8 +28,15 @@ body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: var(--dark-bg);
   color: var(--text);
-  overflow: hidden;
+  overflow-x: hidden;
   line-height: 1.5;
+  margin: 0;
+  padding: 0;
+}
+
+#root {
+  min-height: 100vh;
+  width: 100%;
 }
 
 /* ========== LOGIN PAGE ========== */
@@ -85,6 +92,22 @@ body {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* Correction pour l'affichage sur PC */
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
 .login-header {
@@ -500,6 +523,14 @@ body {
   display: flex;
   overflow: hidden;
   position: relative;
+  min-height: 0;
+}
+
+@media (max-width: 480px) {
+  .room-content {
+    padding-bottom: 0;
+    margin-bottom: 80px; /* Espace pour la barre de contrôle fixe */
+  }
 }
 
 .videos-section {
@@ -1221,6 +1252,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 10px;
   transition: all 0.2s ease;
+  justify-content: space-between;
 }
 
 .participant-item:hover {
@@ -1261,6 +1293,157 @@ body {
   text-overflow: ellipsis;
 }
 
+/* ========== MEDIA PLAYER ========== */
+.media-player-container {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  box-shadow: var(--shadow);
+}
+
+.media-player-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.close-media-btn {
+  padding: 0.4rem;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.close-media-btn:hover {
+  background: rgba(255, 0, 85, 0.1);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.media-player-content {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.media-player-element {
+  width: 100%;
+  max-height: 500px;
+  border-radius: 8px;
+  background: #000;
+}
+
+.media-player-audio {
+  width: 100%;
+  height: 50px;
+}
+
+.media-player-pdf {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.pdf-viewer {
+  width: 100%;
+  height: 600px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.pdf-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  gap: 1rem;
+}
+
+.pdf-controls button {
+  padding: 0.5rem 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 0.85rem;
+}
+
+.pdf-controls button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.pdf-controls button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pdf-controls span {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.media-upload-section {
+  margin-bottom: 1rem;
+}
+
+.media-upload-btn {
+  display: inline-block;
+  padding: 0.75rem 1.25rem;
+  background: rgba(0, 212, 255, 0.1);
+  border: 1px dashed var(--primary);
+  border-radius: 8px;
+  color: var(--primary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-align: center;
+  width: 100%;
+}
+
+.media-upload-btn:hover {
+  background: rgba(0, 212, 255, 0.15);
+  border-color: var(--primary);
+  border-style: solid;
+}
+
+@media (max-width: 768px) {
+  .pdf-viewer {
+    height: 400px;
+  }
+  
+  .media-player-element {
+    max-height: 300px;
+  }
+  
+  .participant-controls {
+    flex-direction: column;
+  }
+}
+
 .you-badge {
   padding: 0.2rem 0.5rem;
   background: rgba(0, 212, 255, 0.15);
@@ -1272,6 +1455,44 @@ body {
   flex-shrink: 0;
 }
 
+.creator-badge {
+  padding: 0.2rem 0.5rem;
+  background: rgba(255, 215, 0, 0.15);
+  border: 1px solid #ffd700;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  color: #ffd700;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.participant-controls {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.control-participant-btn {
+  padding: 0.4rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+}
+
+.control-participant-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
 .controls-bar {
   padding: 1rem 1.25rem;
   background: var(--glass-bg);
@@ -1280,17 +1501,27 @@ body {
   display: flex;
   justify-content: center;
   box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.2);
+  position: relative;
+  z-index: 100;
+  width: 100%;
+  flex-shrink: 0;
 }
 
 .controls-group {
   display: flex;
   gap: 0.75rem;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  width: 100%;
+  max-width: 100%;
 }
 
 .control-btn {
   width: 48px;
   height: 48px;
+  min-width: 48px;
+  min-height: 48px;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--border);
@@ -1302,6 +1533,9 @@ body {
   transition: all 0.2s ease;
   position: relative;
   overflow: hidden;
+  flex-shrink: 0;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .control-btn::before {
@@ -1655,28 +1889,42 @@ body {
   }
   
   .controls-bar {
-    padding: 0.75rem 0.5rem;
+    padding: 0.875rem 0.75rem;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 200;
   }
   
   .controls-group {
-    gap: 0.4rem;
+    gap: 0.5rem;
     width: 100%;
-    justify-content: space-between;
+    justify-content: space-around;
+    flex-wrap: nowrap;
   }
   
   .control-btn {
-    width: 40px;
-    height: 40px;
-    border-radius: 8px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    border-radius: 10px;
+    flex: 0 0 auto;
   }
   
   .control-btn svg {
-    width: 18px;
-    height: 18px;
+    width: 22px;
+    height: 22px;
   }
   
   .leave-btn {
     margin-left: 0;
+  }
+  
+  /* Espace pour la barre de contrôle fixe */
+  .room-content {
+    padding-bottom: 80px;
   }
 }
 

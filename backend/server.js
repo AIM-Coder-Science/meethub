@@ -251,17 +251,27 @@ io.on('connection', (socket) => {
       }
     }
 
-    if (!rooms.has(cleanRoomId)) {
+    let room = rooms.get(cleanRoomId);
+    let isCreator = false;
+    
+    if (!room) {
       console.log(`   ✨ Création de la salle ${cleanRoomId}`);
+      isCreator = true; // Le créateur de la room est le premier
       rooms.set(cleanRoomId, {
         id: cleanRoomId,
         participants: new Map(),
         messages: [],
-        pinnedMessages: []
+        pinnedMessages: [],
+        mediaState: null, // { type, url, isPlaying, currentTime, lastUpdatedServerTime, pageNumber }
+        creatorId: socket.id, // Le premier à créer la room devient le créateur
+        createdAt: Date.now()
       });
+      room = rooms.get(cleanRoomId);
+      console.log(`   👑 ${cleanUserName} est le créateur de la salle ${cleanRoomId}`);
+    } else {
+      // Vérifier si l'utilisateur est le créateur
+      isCreator = room.creatorId === socket.id;
     }
-
-    const room = rooms.get(cleanRoomId);
     
     const existingUsers = Array.from(room.participants.values()).map(p => ({
       id: p.id,
@@ -273,7 +283,8 @@ io.on('connection', (socket) => {
     const userInfo = {
       id: socket.id,
       name: cleanUserName,
-      roomId: cleanRoomId
+      roomId: cleanRoomId,
+      isCreator: isCreator
     };
     
     room.participants.set(socket.id, userInfo);
@@ -281,21 +292,34 @@ io.on('connection', (socket) => {
     
     socket.join(cleanRoomId);
     console.log(`   ✅ ${cleanUserName} a rejoint la salle ${cleanRoomId}`);
+    if (userInfo.isCreator) {
+      console.log(`   👑 ${cleanUserName} est le créateur de la salle`);
+    }
 
-    socket.emit('existing-users', existingUsers);
+    socket.emit('existing-users', existingUsers.map(u => ({ ...u, isCreator: false })));
 
     socket.to(cleanRoomId).emit('user-joined', {
       id: socket.id,
-      name: cleanUserName
+      name: cleanUserName,
+      isCreator: userInfo.isCreator
     });
 
     socket.emit('chat-history', room.messages);
     socket.emit('pinned-messages', room.pinnedMessages);
     
+    // Envoyer l'état initial du média si présent
+    if (room.mediaState) {
+      socket.emit('media-state-update', {
+        ...room.mediaState,
+        lastUpdatedServerTime: Date.now()
+      });
+    }
+    
     socket.emit('join-room-confirmation', {
       roomId: cleanRoomId,
       userName: cleanUserName,
       success: true,
+      isCreator: userInfo.isCreator,
       timestamp: new Date().toISOString()
     });
 
@@ -550,6 +574,126 @@ io.on('connection', (socket) => {
       
       users.delete(socket.id);
     }
+  });
+
+  // Gestion des médias (synchronisation)
+  socket.on('media-action', ({ roomId, action, type, url, currentTime, pageNumber }) => {
+    const user = users.get(socket.id);
+    if (!user) return;
+    
+    const room = rooms.get(roomId);
+    if (!room || !room.participants.has(socket.id)) return;
+
+    // Seul le créateur peut contrôler les médias
+    if (user.id !== room.creatorId) {
+      console.log(`   ⚠️ ${user.name} n'est pas le créateur, action refusée`);
+      socket.emit('media-action-denied', { reason: 'Seul le créateur peut contrôler les médias' });
+      return;
+    }
+
+    const serverTime = Date.now();
+    
+    // Mettre à jour l'état des médias
+    if (action === 'load') {
+      room.mediaState = {
+        type, // 'video', 'audio', 'pdf'
+        url,
+        isPlaying: false,
+        currentTime: 0,
+        lastUpdatedServerTime: serverTime,
+        pageNumber: type === 'pdf' ? (pageNumber || 1) : null
+      };
+    } else if (action === 'play') {
+      if (room.mediaState) {
+        room.mediaState.isPlaying = true;
+        room.mediaState.currentTime = currentTime || 0;
+        room.mediaState.lastUpdatedServerTime = serverTime;
+      }
+    } else if (action === 'pause') {
+      if (room.mediaState) {
+        room.mediaState.isPlaying = false;
+        room.mediaState.currentTime = currentTime || 0;
+        room.mediaState.lastUpdatedServerTime = serverTime;
+      }
+    } else if (action === 'seek') {
+      if (room.mediaState) {
+        room.mediaState.currentTime = currentTime || 0;
+        room.mediaState.lastUpdatedServerTime = serverTime;
+        room.mediaState.isPlaying = false; // Pause lors d'un seek
+      }
+    } else if (action === 'page-change' && type === 'pdf') {
+      if (room.mediaState && room.mediaState.type === 'pdf') {
+        room.mediaState.pageNumber = pageNumber || 1;
+        room.mediaState.lastUpdatedServerTime = serverTime;
+      }
+    } else if (action === 'stop') {
+      room.mediaState = null;
+    }
+
+    // Diffuser l'action à tous les autres participants
+    const update = {
+      action,
+      type,
+      url: action === 'load' ? url : room.mediaState?.url,
+      currentTime: room.mediaState?.currentTime || 0,
+      pageNumber: room.mediaState?.pageNumber || null,
+      lastUpdatedServerTime: serverTime,
+      isPlaying: room.mediaState?.isPlaying || false
+    };
+
+    socket.to(roomId).emit('media-action', update);
+    console.log(`   🎬 Action média: ${action} (${type}) dans ${roomId} par ${user.name}`);
+  });
+
+  // Demander l'état initial du média
+  socket.on('get-media-state', ({ roomId }) => {
+    const room = rooms.get(roomId);
+    if (room && room.mediaState) {
+      socket.emit('media-state-update', {
+        ...room.mediaState,
+        lastUpdatedServerTime: Date.now()
+      });
+    }
+  });
+
+  // Permissions du créateur : contrôler caméra/micro d'autres utilisateurs
+  socket.on('control-user-media', ({ roomId, targetUserId, action, value }) => {
+    const user = users.get(socket.id);
+    if (!user) return;
+    
+    const room = rooms.get(roomId);
+    if (!room || !room.participants.has(socket.id)) return;
+
+    // Vérifier que l'utilisateur est le créateur
+    if (user.id !== room.creatorId) {
+      console.log(`   ⚠️ ${user.name} n'est pas le créateur, contrôle refusé`);
+      socket.emit('control-denied', { reason: 'Seul le créateur peut contrôler les autres participants' });
+      return;
+    }
+
+    const targetUser = users.get(targetUserId);
+    if (!targetUser || targetUser.roomId !== roomId) {
+      socket.emit('control-error', { message: 'Utilisateur cible introuvable' });
+      return;
+    }
+
+    // Actions possibles : 'toggle-video', 'toggle-audio', 'mute-audio', 'mute-video'
+    console.log(`   👑 ${user.name} (créateur) contrôle ${targetUser.name}: ${action} = ${value}`);
+    
+    socket.to(targetUserId).emit('remote-media-control', {
+      action,
+      value,
+      controlledBy: user.name
+    });
+
+    // Notifier les autres participants
+    socket.to(roomId).emit('user-media-controlled', {
+      targetUserId,
+      targetUserName: targetUser.name,
+      action,
+      value,
+      controlledBy: user.name
+    });
   });
 
   socket.on('error', (error) => {
