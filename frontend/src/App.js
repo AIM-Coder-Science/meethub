@@ -31,6 +31,8 @@ export default function VideoConferenceApp() {
   const [pinnedMessages, setPinnedMessages] = useState([]);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('chat');
+  const [userVideoStatus, setUserVideoStatus] = useState({}); // {userId: isVideoOn}
+  const [notification, setNotification] = useState(null);
   
   const socketRef = useRef(null);
   const localVideoRef = useRef(null);
@@ -318,9 +320,46 @@ export default function VideoConferenceApp() {
       setPinnedMessages(pinnedMessages);
     });
 
-    socketRef.current.on('user-video-toggle', ({ userId, isVideoOn }) => {
-      console.log('🎥 Vidéo toggle:', userId, isVideoOn);
-      // Mettre à jour l'interface si nécessaire
+    socketRef.current.on('user-video-toggle', ({ userId, userName, isVideoOn }) => {
+      console.log('🎥 Vidéo toggle:', userId, userName, isVideoOn);
+      
+      // Mettre à jour le statut vidéo de l'utilisateur
+      setUserVideoStatus(prev => ({ ...prev, [userId]: isVideoOn }));
+      
+      // Afficher une notification
+      if (userName) {
+        setNotification({
+          message: `${userName} a ${isVideoOn ? 'activé' : 'coupé'} sa caméra`,
+          type: 'info',
+          timestamp: Date.now()
+        });
+        
+        // Masquer la notification après 3 secondes
+        setTimeout(() => {
+          setNotification(null);
+        }, 3000);
+      }
+      
+      // Si la vidéo est coupée, mettre à jour le stream pour masquer la vidéo
+      setRemoteStreams(prev => {
+        const stream = prev[userId];
+        if (stream) {
+          stream.getVideoTracks().forEach(track => {
+            track.enabled = isVideoOn;
+          });
+          
+          // Mettre à jour l'élément vidéo
+          setTimeout(() => {
+            const videoElement = remoteVideosRef.current[userId];
+            if (videoElement) {
+              videoElement.srcObject = stream;
+              // Forcer la mise à jour
+              videoElement.load();
+            }
+          }, 50);
+        }
+        return prev;
+      });
     });
 
     socketRef.current.on('user-audio-toggle', ({ userId, isAudioOn }) => {
@@ -355,31 +394,75 @@ export default function VideoConferenceApp() {
       const peer = new RTCPeerConnection(configuration);
       peersRef.current[userId] = peer;
 
-      // Ajouter les tracks locales
+      // Ajouter les tracks locales si le stream existe
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(track => {
-          console.log(`🎯 Ajout track ${track.kind} à peer ${userId}`);
+          console.log(`🎯 Ajout track ${track.kind} (enabled: ${track.enabled}) à peer ${userId}`);
           peer.addTrack(track, localStreamRef.current);
         });
       }
 
+      // Écouter les changements de track (quand quelqu'un ajoute/retire des tracks)
       peer.ontrack = (event) => {
-        console.log(`📹 Track reçu de ${userId}:`, event.track.kind);
-        const stream = event.streams[0];
-        if (stream) {
-          console.log(`✅ Stream reçu de ${userId}, tracks:`, stream.getTracks().length);
-          setRemoteStreams(prev => ({ ...prev, [userId]: stream }));
-          
-          // Attacher le stream à l'élément vidéo
-          setTimeout(() => {
-            const videoElement = remoteVideosRef.current[userId];
-            if (videoElement && stream) {
-              videoElement.srcObject = stream;
-              console.log(`🎬 Vidéo attachée pour ${userId}`);
-            }
-          }, 100);
+        console.log(`📹 Track reçu de ${userId}:`, event.track?.kind, event.track?.enabled);
+        
+        if (!event.track) {
+          console.warn(`⚠️ Aucun track dans l'event pour ${userId}`);
+          return;
         }
+        
+        const stream = event.streams && event.streams.length > 0 ? event.streams[0] : null;
+        
+        // Mettre à jour le stream existant ou créer un nouveau
+        setRemoteStreams(prev => {
+          const existing = prev[userId];
+          
+          if (existing) {
+            // Si un stream existe déjà, vérifier si le track existe déjà
+            const existingTrack = existing.getTracks().find(t => t.id === event.track.id);
+            if (!existingTrack) {
+              // Ajouter le nouveau track au stream existant
+              existing.addTrack(event.track);
+              console.log(`➕ Track ${event.track.kind} ajouté au stream existant de ${userId}`);
+            } else {
+              // Mettre à jour le track existant
+              existingTrack.enabled = event.track.enabled;
+              console.log(`🔄 Track ${event.track.kind} mis à jour pour ${userId}`);
+            }
+            
+            // Attacher le stream à l'élément vidéo
+            setTimeout(() => {
+              const videoElement = remoteVideosRef.current[userId];
+              if (videoElement) {
+                videoElement.srcObject = existing;
+                console.log(`🎬 Vidéo attachée pour ${userId} (stream existant)`);
+              }
+            }, 100);
+            
+            return { ...prev, [userId]: existing };
+          } else {
+            // Créer un nouveau stream
+            const newStream = stream || new MediaStream();
+            if (!stream && event.track) {
+              newStream.addTrack(event.track);
+            }
+            
+            console.log(`✅ Nouveau stream créé pour ${userId}, tracks:`, newStream.getTracks().length);
+            
+            // Attacher le stream à l'élément vidéo
+            setTimeout(() => {
+              const videoElement = remoteVideosRef.current[userId];
+              if (videoElement) {
+                videoElement.srcObject = newStream;
+                console.log(`🎬 Vidéo attachée pour ${userId} (nouveau stream)`);
+              }
+            }, 100);
+            
+            return { ...prev, [userId]: newStream };
+          }
+        });
       };
+
 
       peer.onicecandidate = (event) => {
         if (event.candidate) {
@@ -624,10 +707,39 @@ export default function VideoConferenceApp() {
     if (localStreamRef.current) {
       const videoTrack = localStreamRef.current.getVideoTracks()[0];
       if (videoTrack) {
-        videoTrack.enabled = !videoTrack.enabled;
-        setIsVideoOn(videoTrack.enabled);
-        console.log(`🎥 Vidéo ${videoTrack.enabled ? 'activée' : 'désactivée'}`);
-        socketRef.current.emit('toggle-video', { roomId, isVideoOn: videoTrack.enabled });
+        const newState = !videoTrack.enabled;
+        videoTrack.enabled = newState;
+        setIsVideoOn(newState);
+        console.log(`🎥 Vidéo ${newState ? 'activée' : 'désactivée'}`);
+        
+        // Mettre à jour tous les peers avec le nouveau track
+        Object.entries(peersRef.current).forEach(([userId, peer]) => {
+          if (peer) {
+            const senders = peer.getSenders();
+            const sender = senders.find(s => s.track && s.track.kind === 'video');
+            if (sender && sender.track) {
+              sender.track.enabled = newState;
+            }
+            
+            // Si le track est activé, s'assurer qu'il est bien dans la connexion
+            if (newState && videoTrack) {
+              const hasTrack = senders.some(s => s.track && s.track.id === videoTrack.id);
+              if (!hasTrack) {
+                peer.addTrack(videoTrack, localStreamRef.current);
+                // Recréer l'offer si nécessaire
+                peer.createOffer().then(offer => {
+                  peer.setLocalDescription(offer);
+                  socketRef.current.emit('offer', {
+                    to: userId,
+                    offer: peer.localDescription
+                  });
+                }).catch(err => console.error('Erreur création offer:', err));
+              }
+            }
+          }
+        });
+        
+        socketRef.current.emit('toggle-video', { roomId, isVideoOn: newState });
       }
     }
   };
@@ -790,7 +902,26 @@ export default function VideoConferenceApp() {
 
   const reactToMessage = (messageId, reaction) => {
     console.log('😀 Réaction au message:', messageId, reaction);
-    socketRef.current.emit('react-message', { roomId, messageId, reaction });
+    
+    // Vérifier si l'utilisateur a déjà cette réaction
+    const message = chatMessages.find(m => m.id === messageId);
+    const currentUserId = socketRef.current?.id;
+    
+    if (message && message.reactions && message.reactions[reaction]) {
+      const hasThisReaction = message.reactions[reaction].includes(currentUserId);
+      // Si l'utilisateur a déjà cette réaction, on la retire (pas d'émission)
+      if (hasThisReaction) {
+        // Le serveur gérera la suppression
+        socketRef.current.emit('react-message', { roomId, messageId, reaction });
+      } else {
+        // Sinon, on l'ajoute (remplace les autres)
+        socketRef.current.emit('react-message', { roomId, messageId, reaction });
+      }
+    } else {
+      // Nouvelle réaction
+      socketRef.current.emit('react-message', { roomId, messageId, reaction });
+    }
+    
     setShowEmojiPicker(null);
     setShowMessageMenu(null);
   };
@@ -923,6 +1054,16 @@ export default function VideoConferenceApp() {
 
   return (
     <div className="video-room">
+      {/* Notification */}
+      {notification && (
+        <div className={`notification notification-${notification.type}`}>
+          <span>{notification.message}</span>
+          <button onClick={() => setNotification(null)} className="notification-close">
+            <X size={16} />
+          </button>
+        </div>
+      )}
+      
       <header className="room-header">
         <div className="header-left">
           <button className="mobile-menu-btn" onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>
@@ -978,31 +1119,49 @@ export default function VideoConferenceApp() {
             </div>
 
             {/* Remote Videos */}
-            {participants.filter(p => !p.isLocal).map((participant) => (
-              <div key={participant.id} className="video-tile">
-                <video
-                  ref={el => {
-                    remoteVideosRef.current[participant.id] = el;
-                    if (el && remoteStreams[participant.id]) {
-                      el.srcObject = remoteStreams[participant.id];
-                    }
-                  }}
-                  autoPlay
-                  playsInline
-                  className="video-element"
-                />
-                <div className="video-overlay">
-                  <span className="participant-name">{participant.name}</span>
-                </div>
-                {!remoteStreams[participant.id] && (
-                  <div className="video-off-placeholder">
-                    <div className="avatar-placeholder">
-                      {participant.name.charAt(0).toUpperCase()}
+            {participants.filter(p => !p.isLocal).map((participant) => {
+              const hasVideo = remoteStreams[participant.id] && userVideoStatus[participant.id] !== false;
+              const stream = remoteStreams[participant.id];
+              const videoDisabled = userVideoStatus[participant.id] === false;
+              
+              return (
+                <div key={participant.id} className="video-tile">
+                  <video
+                    ref={el => {
+                      remoteVideosRef.current[participant.id] = el;
+                      if (el && stream) {
+                        el.srcObject = stream;
+                        // Mettre à jour l'état enabled des tracks
+                        if (stream.getVideoTracks().length > 0) {
+                          stream.getVideoTracks().forEach(track => {
+                            track.enabled = !videoDisabled;
+                          });
+                        }
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    muted={false}
+                    className="video-element"
+                    style={{ display: videoDisabled ? 'none' : 'block' }}
+                  />
+                  <div className="video-overlay">
+                    <span className="participant-name">{participant.name}</span>
+                    <div className="video-indicators">
+                      {videoDisabled && <VideoOff size={16} />}
+                      {stream && stream.getAudioTracks().length > 0 && !stream.getAudioTracks()[0].enabled && <MicOff size={16} />}
                     </div>
                   </div>
-                )}
-              </div>
-            ))}
+                  {(!stream || videoDisabled) && (
+                    <div className="video-off-placeholder">
+                      <div className="avatar-placeholder">
+                        {participant.name.charAt(0).toUpperCase()}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
 
             {/* Screen Shares */}
             {Object.entries(screenStreams).map(([userId, stream]) => {

@@ -138,19 +138,19 @@ app.get('/api/turn-credentials', (req, res) => {
       // TURN Twilio (ajoutez vos credentials ici)
       { 
         urls: 'turn:global.turn.twilio.com:3478?transport=udp',
-        username: 'TWILIO_ACCOUNT_SID',
-        credential: 'TWILIO_AUTH_TOKEN'
+        username: process.env.TWILIO_ACCOUNT_SID || 'TWILIO_ACCOUNT_SID',
+        credential: process.env.TWILIO_AUTH_TOKEN || 'TWILIO_AUTH_TOKEN'
       },
       { 
         urls: 'turn:global.turn.twilio.com:3478?transport=tcp',
-        username: 'TWILIO_ACCOUNT_SID',
-        credential: 'TWILIO_AUTH_TOKEN'
-     },
-     { 
-       urls: 'turn:global.turn.twilio.com:443?transport=tcp',
-       username: 'TWILIO_ACCOUNT_SID',
-       credential: 'TWILIO_AUTH_TOKEN'
-     },
+        username: process.env.TWILIO_ACCOUNT_SID || 'TWILIO_ACCOUNT_SID',
+        credential: process.env.TWILIO_AUTH_TOKEN || 'TWILIO_AUTH_TOKEN'
+      },
+      { 
+        urls: 'turn:global.turn.twilio.com:443?transport=tcp',
+        username: process.env.TWILIO_ACCOUNT_SID || 'TWILIO_ACCOUNT_SID',
+        credential: process.env.TWILIO_AUTH_TOKEN || 'TWILIO_AUTH_TOKEN'
+      },
       
       // TURN openrelay (gratuit)
       { 
@@ -202,13 +202,36 @@ io.on('connection', (socket) => {
 
   // Rejoindre une salle
   socket.on('join-room', ({ roomId, userName }) => {
+    // Validation des paramètres
+    if (!roomId || !userName || typeof roomId !== 'string' || typeof userName !== 'string') {
+      console.log(`   ❌ Paramètres invalides pour join-room`);
+      socket.emit('join-room-confirmation', {
+        success: false,
+        error: 'Paramètres invalides: roomId et userName sont requis'
+      });
+      return;
+    }
+
+    // Nettoyer les espaces
+    const cleanRoomId = roomId.trim().toUpperCase();
+    const cleanUserName = userName.trim();
+    
+    if (!cleanRoomId || !cleanUserName) {
+      console.log(`   ❌ Paramètres vides après nettoyage`);
+      socket.emit('join-room-confirmation', {
+        success: false,
+        error: 'roomId et userName ne peuvent pas être vides'
+      });
+      return;
+    }
+
     console.log(`\n📥 JOIN-ROOM reçu`);
-    console.log(`   User: ${userName}`);
-    console.log(`   Room: ${roomId}`);
+    console.log(`   User: ${cleanUserName}`);
+    console.log(`   Room: ${cleanRoomId}`);
     console.log(`   Socket: ${socket.id}`);
 
     const existingUser = users.get(socket.id);
-    if (existingUser && existingUser.roomId !== roomId) {
+    if (existingUser && existingUser.roomId !== cleanRoomId) {
       console.log(`   🔄 Utilisateur déjà dans une autre salle, nettoyage...`);
       
       const oldRoom = rooms.get(existingUser.roomId);
@@ -228,17 +251,17 @@ io.on('connection', (socket) => {
       }
     }
 
-    if (!rooms.has(roomId)) {
-      console.log(`   ✨ Création de la salle ${roomId}`);
-      rooms.set(roomId, {
-        id: roomId,
+    if (!rooms.has(cleanRoomId)) {
+      console.log(`   ✨ Création de la salle ${cleanRoomId}`);
+      rooms.set(cleanRoomId, {
+        id: cleanRoomId,
         participants: new Map(),
         messages: [],
         pinnedMessages: []
       });
     }
 
-    const room = rooms.get(roomId);
+    const room = rooms.get(cleanRoomId);
     
     const existingUsers = Array.from(room.participants.values()).map(p => ({
       id: p.id,
@@ -249,34 +272,34 @@ io.on('connection', (socket) => {
 
     const userInfo = {
       id: socket.id,
-      name: userName,
-      roomId: roomId
+      name: cleanUserName,
+      roomId: cleanRoomId
     };
     
     room.participants.set(socket.id, userInfo);
     users.set(socket.id, userInfo);
     
-    socket.join(roomId);
-    console.log(`   ✅ ${userName} a rejoint la salle ${roomId}`);
+    socket.join(cleanRoomId);
+    console.log(`   ✅ ${cleanUserName} a rejoint la salle ${cleanRoomId}`);
 
     socket.emit('existing-users', existingUsers);
 
-    socket.to(roomId).emit('user-joined', {
+    socket.to(cleanRoomId).emit('user-joined', {
       id: socket.id,
-      name: userName
+      name: cleanUserName
     });
 
     socket.emit('chat-history', room.messages);
     socket.emit('pinned-messages', room.pinnedMessages);
     
     socket.emit('join-room-confirmation', {
-      roomId,
-      userName,
+      roomId: cleanRoomId,
+      userName: cleanUserName,
       success: true,
       timestamp: new Date().toISOString()
     });
 
-    console.log(`   📊 État de la salle ${roomId}: ${room.participants.size} participants`);
+    console.log(`   📊 État de la salle ${cleanRoomId}: ${room.participants.size} participants`);
   });
 
   // Signalisation WebRTC
@@ -363,15 +386,37 @@ io.on('connection', (socket) => {
 
     const message = room.messages.find(m => m.id === messageId);
     if (message) {
-      if (!message.reactions[reaction]) {
-        message.reactions[reaction] = [];
+      // Initialiser reactions si nécessaire
+      if (!message.reactions) {
+        message.reactions = {};
       }
       
-      const userIndex = message.reactions[reaction].indexOf(socket.id);
-      if (userIndex === -1) {
-        message.reactions[reaction].push(socket.id);
-      } else {
-        message.reactions[reaction].splice(userIndex, 1);
+      // Supprimer toutes les réactions existantes de cet utilisateur
+      Object.keys(message.reactions).forEach(emoji => {
+        if (Array.isArray(message.reactions[emoji])) {
+          const userIndex = message.reactions[emoji].indexOf(socket.id);
+          if (userIndex !== -1) {
+            message.reactions[emoji].splice(userIndex, 1);
+            // Supprimer la clé si le tableau est vide
+            if (message.reactions[emoji].length === 0) {
+              delete message.reactions[emoji];
+            }
+          }
+        }
+      });
+      
+      // Si la nouvelle réaction est différente de celles supprimées, l'ajouter
+      if (reaction) {
+        // Vérifier si l'utilisateur avait déjà cette réaction (si c'est le cas, elle a été supprimée, donc on ne la rajoute pas)
+        // Sinon, ajouter la nouvelle réaction
+        if (!message.reactions[reaction]) {
+          message.reactions[reaction] = [];
+        }
+        
+        // Ajouter l'utilisateur seulement s'il n'est pas déjà dans la liste (cas limite)
+        if (!message.reactions[reaction].includes(socket.id)) {
+          message.reactions[reaction].push(socket.id);
+        }
       }
       
       io.to(roomId).emit('message-reacted', { 
@@ -406,10 +451,16 @@ io.on('connection', (socket) => {
 
   // Toggle vidéo
   socket.on('toggle-video', ({ roomId, isVideoOn }) => {
+    const user = users.get(socket.id);
+    if (!user) return;
+    
     socket.to(roomId).emit('user-video-toggle', {
       userId: socket.id,
+      userName: user.name,
       isVideoOn
     });
+    
+    console.log(`🎥 Vidéo ${isVideoOn ? 'activée' : 'désactivée'} par ${user.name} dans ${roomId}`);
   });
 
   // Toggle audio
@@ -510,6 +561,7 @@ io.on('connection', (socket) => {
 setInterval(() => {
   let cleanedCount = 0;
   const now = Date.now();
+  const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 1 heure
   
   for (const [roomId, room] of rooms.entries()) {
     if (room.participants.size === 0) {
@@ -517,9 +569,10 @@ setInterval(() => {
         ? new Date(room.messages[room.messages.length - 1].time).getTime()
         : now;
       
-      if (room.participants.size === 0 || (now - lastActivity) > 60 * 60 * 1000) {
+      if ((now - lastActivity) > INACTIVITY_TIMEOUT) {
         rooms.delete(roomId);
         cleanedCount++;
+        console.log(`   🗑️ Salle ${roomId} supprimée (inactivité > 1h)`);
       }
     }
   }
