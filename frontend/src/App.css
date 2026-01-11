@@ -1162,6 +1162,11 @@ html, body {
   padding: 0.875rem;
   border-top: 1px solid var(--border);
   background: rgba(20, 24, 36, 0.6);
+  position: relative;
+  z-index: 1;
+  /* S'assurer que le conteneur n'empêche pas le clavier */
+  -webkit-transform: translateZ(0);
+  transform: translateZ(0);
 }
 
 .file-preview {
@@ -1210,6 +1215,12 @@ html, body {
   outline: none;
   transition: all 0.2s ease;
   min-height: 40px;
+  -webkit-appearance: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  /* Assurer que l'input peut recevoir le focus sur mobile */
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .message-input:focus {
@@ -1900,12 +1911,25 @@ html, body {
   
   .chat-input-container {
     padding: 0.75rem;
+    position: relative;
+    z-index: 1;
+    /* S'assurer que le conteneur n'empêche pas le clavier */
+    -webkit-transform: translateZ(0);
+    transform: translateZ(0);
   }
   
   .message-input {
     font-size: 0.85rem;
     padding: 0.5rem 0.75rem;
     min-height: 36px;
+    -webkit-appearance: none;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  
+  .message-input:focus {
+    -webkit-user-select: text;
+    user-select: text;
   }
   
   .attach-btn, .send-btn {
