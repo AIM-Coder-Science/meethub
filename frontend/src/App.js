@@ -56,6 +56,10 @@ export default function VideoConferenceApp() {
   const messageMenuRefs = useRef({});
   const messageInputRef = useRef(null);
 
+  // QUEUE ICE CANDIDATES - NOUVELLES RÉFÉRENCES
+  const pendingIceCandidatesRef = useRef({}); // { peerId: [candidate1, candidate2, ...] }
+  const remoteDescriptionsSetRef = useRef({}); // { peerId: true/false }
+
   const emojis = ['❤️', '👍', '👎', '😂', '😮', '😢', '🎉'];
 
   // Fermer les menus quand on clique ailleurs
@@ -85,10 +89,8 @@ export default function VideoConferenceApp() {
   // Focus automatique sur l'input quand le chat s'ouvre (surtout sur mobile)
   useEffect(() => {
     if (showChat && activeTab === 'chat' && messageInputRef.current) {
-      // Petit délai pour s'assurer que le sidebar est complètement ouvert
       const timer = setTimeout(() => {
         messageInputRef.current?.focus();
-        // Sur mobile, forcer le scroll vers le bas pour voir l'input
         if (window.innerWidth <= 900) {
           setTimeout(() => {
             messageInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -206,7 +208,60 @@ export default function VideoConferenceApp() {
     };
   }, []);
 
-  // Initialiser Socket.io - DÉPENDANCES MINIMALES
+  // FONCTIONS UTILITAIRES POUR LA QUEUE ICE - NOUVEAU
+  const addPendingIceCandidate = (peerId, candidate) => {
+    if (!pendingIceCandidatesRef.current[peerId]) {
+      pendingIceCandidatesRef.current[peerId] = [];
+    }
+    pendingIceCandidatesRef.current[peerId].push(candidate);
+    console.log(`📥 ICE candidate mis en queue pour ${peerId}: ${candidate.candidate}`);
+  };
+
+  const flushPendingIceCandidates = async (peerId, peer) => {
+    const pending = pendingIceCandidatesRef.current[peerId];
+    if (!pending || pending.length === 0 || !peer) return;
+
+    console.log(`🔄 Évacuation des ${pending.length} ICE candidates en attente pour ${peerId}`);
+    
+    for (const candidate of pending) {
+      try {
+        await peer.addIceCandidate(new RTCIceCandidate(candidate));
+        console.log(`✅ ICE candidate évacué pour ${peerId}: ${candidate.candidate}`);
+      } catch (error) {
+        console.warn(`⚠️ Erreur évacuation ICE candidate pour ${peerId}:`, error.message);
+      }
+    }
+    
+    pendingIceCandidatesRef.current[peerId] = [];
+  };
+
+  const cleanupPeerData = (peerId) => {
+    if (peersRef.current[peerId]) {
+      try {
+        peersRef.current[peerId].close();
+      } catch (err) {
+        console.warn(`⚠️ Erreur fermeture peer ${peerId}:`, err);
+      }
+      delete peersRef.current[peerId];
+    }
+    
+    delete pendingIceCandidatesRef.current[peerId];
+    delete remoteDescriptionsSetRef.current[peerId];
+    
+    setRemoteStreams(prev => {
+      const updated = { ...prev };
+      delete updated[peerId];
+      return updated;
+    });
+    
+    setIceConnectionAttempts(prev => {
+      const updated = { ...prev };
+      delete updated[peerId];
+      return updated;
+    });
+  };
+
+  // Initialiser Socket.io
   useEffect(() => {
     console.log('🔌 Initialisation Socket.io...');
     
@@ -361,75 +416,71 @@ export default function VideoConferenceApp() {
     socketRef.current.on('user-left', (user) => {
       console.log('👋 Utilisateur parti:', user);
       removeParticipant(user.id);
-      
-      // NETTOYAGE ROBUSTE DES PEERS
-      if (peersRef.current[user.id]) {
-        try {
-          peersRef.current[user.id].close();
-          console.log(`🔒 Peer ${user.id} fermé proprement`);
-        } catch (err) {
-          console.warn(`⚠️ Erreur fermeture peer ${user.id}:`, err);
-        }
-        delete peersRef.current[user.id];
-      }
-      
-      if (screenPeersRef.current[user.id]) {
-        try {
-          screenPeersRef.current[user.id].close();
-        } catch (err) {
-          console.warn(`⚠️ Erreur fermeture screen peer ${user.id}:`, err);
-        }
-        delete screenPeersRef.current[user.id];
-      }
-      
-      setRemoteStreams(prev => {
-        const updated = { ...prev };
-        delete updated[user.id];
-        return updated;
-      });
-      setScreenStreams(prev => {
-        const updated = { ...prev };
-        delete updated[user.id];
-        return updated;
-      });
-      setIceConnectionAttempts(prev => {
-        const updated = { ...prev };
-        delete updated[user.id];
-        return updated;
-      });
+      cleanupPeerData(user.id);
     });
 
+    // GESTION CRITIQUE DES OFFERS/ANSWERS AVEC QUEUE ICE
     socketRef.current.on('offer', async ({ from, offer }) => {
       console.log('📨 OFFRE reçue de:', from);
+      
       let peer = peersRef.current[from];
       if (!peer) {
+        console.log(`🔗 Création peer ${from} pour traiter l'offre`);
         peer = await createPeerConnection(from, false);
+        if (!peer) return;
       }
-      if (peer) {
-        try {
-          await peer.setRemoteDescription(new RTCSessionDescription(offer));
-          const answer = await peer.createAnswer();
-          await peer.setLocalDescription(answer);
-          socketRef.current.emit('answer', { to: from, answer });
-        } catch (error) {
-          console.error('❌ Erreur traitement offer:', error);
-        }
+      
+      try {
+        // IMPORTANT: Réinitialiser l'état avant setRemoteDescription
+        remoteDescriptionsSetRef.current[from] = false;
+        
+        await peer.setRemoteDescription(new RTCSessionDescription(offer));
+        console.log(`✅ remoteDescription défini pour ${from}`);
+        remoteDescriptionsSetRef.current[from] = true;
+        
+        // CRITIQUE: Évacuer les ICE candidates en attente
+        await flushPendingIceCandidates(from, peer);
+        
+        // Créer et envoyer la réponse
+        const answer = await peer.createAnswer();
+        await peer.setLocalDescription(answer);
+        
+        socketRef.current.emit('answer', { to: from, answer });
+        console.log(`📤 ANSWER envoyé à ${from}`);
+        
+      } catch (error) {
+        console.error(`❌ Erreur traitement offer de ${from}:`, error);
+        cleanupPeerData(from);
       }
     });
 
     socketRef.current.on('answer', async ({ from, answer }) => {
       console.log('📨 RÉPONSE reçue de:', from);
+      
       const peer = peersRef.current[from];
-      if (peer) {
-        try {
-          await peer.setRemoteDescription(new RTCSessionDescription(answer));
-        } catch (error) {
-          console.error('❌ Erreur traitement answer:', error);
-        }
+      if (!peer) {
+        console.warn(`⚠️ Aucun peer trouvé pour ${from}, réponse ignorée`);
+        return;
+      }
+      
+      try {
+        // IMPORTANT: Réinitialiser l'état avant setRemoteDescription
+        remoteDescriptionsSetRef.current[from] = false;
+        
+        await peer.setRemoteDescription(new RTCSessionDescription(answer));
+        console.log(`✅ remoteDescription défini pour ${from} (answer)`);
+        remoteDescriptionsSetRef.current[from] = true;
+        
+        // CRITIQUE: Évacuer les ICE candidates en attente
+        await flushPendingIceCandidates(from, peer);
+        
+      } catch (error) {
+        console.error(`❌ Erreur traitement answer de ${from}:`, error);
+        cleanupPeerData(from);
       }
     });
 
-    // GESTION SÉCURISÉE DES ICE CANDIDATES - CORRECTION "Unknown ufrag"
+    // GESTION SÉCURISÉE DES ICE CANDIDATES AVEC QUEUE
     socketRef.current.on('ice-candidate', async ({ from, candidate }) => {
       console.log('🧊 ICE CANDIDATE reçu de:', from, candidate?.type);
       
@@ -439,16 +490,21 @@ export default function VideoConferenceApp() {
         return;
       }
       
-      // CONDITION CRITIQUE : Ne traiter que si remoteDescription est défini
-      if (!peer.remoteDescription) {
-        console.warn(`⚠️ remoteDescription non défini pour ${from}, candidat mis en attente`);
+      // VÉRIFICATION CRITIQUE: remoteDescription est-il défini?
+      const isRemoteDescriptionSet = remoteDescriptionsSetRef.current[from] || peer.remoteDescription;
+      
+      if (!isRemoteDescriptionSet) {
+        // Stocker dans la queue en attendant setRemoteDescription
+        console.log(`📥 ICE candidate mis en attente pour ${from} (remoteDescription non défini)`);
+        addPendingIceCandidate(from, candidate);
         return;
       }
       
+      // remoteDescription est défini, ajouter le candidat directement
       if (candidate) {
         try {
           await peer.addIceCandidate(new RTCIceCandidate(candidate));
-          console.log(`✅ ICE candidate ajouté pour ${from}`);
+          console.log(`✅ ICE candidate ajouté directement pour ${from}`);
         } catch (error) {
           // Ignorer silencieusement les erreurs de candidats périmés
           if (error.toString().includes('Unknown ufrag') || 
@@ -531,7 +587,6 @@ export default function VideoConferenceApp() {
       console.log('💬 Nouveau message reçu:', message);
       if (message && message.id) {
         setChatMessages(prev => {
-          // Éviter les doublons
           const exists = prev.find(m => m.id === message.id);
           if (exists) {
             console.log('⚠️ Message déjà présent, ignoré:', message.id);
@@ -628,30 +683,15 @@ export default function VideoConferenceApp() {
         socketRef.current.disconnect();
       }
     };
-  }, []); // Dépendances vides - initialisation unique
+  }, []);
 
-  // Créer une connexion peer avec nettoyage préventif
+  // Créer une connexion peer avec gestion ICE améliorée
   const createPeerConnection = async (userId, isInitiator) => {
     try {
       console.log(`🔗 Création peer ${userId} (initiateur: ${isInitiator})`);
       
-      // NETTOYAGE PRÉVENTIF : Fermer l'ancien peer s'il existe
-      if (peersRef.current[userId]) {
-        console.log(`🧹 Nettoyage ancien peer ${userId} avant recréation`);
-        try {
-          peersRef.current[userId].close();
-        } catch (err) {
-          console.warn(`⚠️ Erreur fermeture ancien peer ${userId}:`, err);
-        }
-        delete peersRef.current[userId];
-      }
-      
-      // Nettoyer les références de stream
-      setRemoteStreams(prev => {
-        const updated = { ...prev };
-        delete updated[userId];
-        return updated;
-      });
+      // Nettoyage préventif
+      cleanupPeerData(userId);
       
       const configuration = iceConfig || getDefaultIceConfig();
       
@@ -659,6 +699,10 @@ export default function VideoConferenceApp() {
       
       const peer = new RTCPeerConnection(configuration);
       peersRef.current[userId] = peer;
+      
+      // Initialiser la queue ICE pour ce peer
+      pendingIceCandidatesRef.current[userId] = [];
+      remoteDescriptionsSetRef.current[userId] = false;
 
       // Gestion robuste de l'état de la connexion
       peer.oniceconnectionstatechange = () => {
@@ -707,6 +751,7 @@ export default function VideoConferenceApp() {
               type: 'error',
               timestamp: Date.now()
             });
+            cleanupPeerData(userId);
           }
         } else if (state === 'connected' || state === 'completed') {
           console.log(`✅ Connexion ICE établie avec ${userId}`);
@@ -727,12 +772,7 @@ export default function VideoConferenceApp() {
           setTimeout(() => {
             if (peer && peer.connectionState === 'failed') {
               console.log(`🔄 Recréation de la connexion pour ${userId}`);
-              try {
-                peer.close();
-              } catch (err) {
-                console.warn(`⚠️ Erreur fermeture peer failed ${userId}:`, err);
-              }
-              delete peersRef.current[userId];
+              cleanupPeerData(userId);
               createPeerConnection(userId, isInitiator);
             }
           }, 2000);
@@ -867,6 +907,7 @@ export default function VideoConferenceApp() {
       return peer;
     } catch (error) {
       console.error('❌ Erreur création peer:', error);
+      cleanupPeerData(userId);
       return null;
     }
   };
@@ -886,10 +927,9 @@ export default function VideoConferenceApp() {
     };
   };
 
-  // Créer une connexion peer pour le partage d'écran avec nettoyage préventif
+  // Créer une connexion peer pour le partage d'écran
   const createScreenPeerConnection = async (userId, isInitiator) => {
     try {
-      // NETTOYAGE PRÉVENTIF
       if (screenPeersRef.current[userId]) {
         console.log(`🧹 Nettoyage ancien screen peer ${userId}`);
         try {
@@ -1060,15 +1100,8 @@ export default function VideoConferenceApp() {
       }
     });
     
-    Object.entries(peersRef.current).forEach(([id, peer]) => {
-      if (peer) {
-        try {
-          peer.close();
-          console.log(`🔒 Peer ${id} fermé`);
-        } catch (err) {
-          console.warn(`⚠️ Erreur fermeture peer ${id}:`, err);
-        }
-      }
+    Object.keys(peersRef.current).forEach(peerId => {
+      cleanupPeerData(peerId);
     });
     
     Object.entries(screenPeersRef.current).forEach(([id, peer]) => {
@@ -1082,9 +1115,7 @@ export default function VideoConferenceApp() {
       }
     });
     
-    peersRef.current = {};
     screenPeersRef.current = {};
-    setIceConnectionAttempts({});
     
     if (socketRef.current) {
       socketRef.current.emit('leave-room', { roomId });
@@ -1102,6 +1133,11 @@ export default function VideoConferenceApp() {
     
     console.log('✅ Salle quittée avec succès');
   };
+
+  // [Le reste du code reste inchangé : toggleVideo, toggleAudio, toggleScreenShare, handleFileSelect, uploadFile, sendMessage, editMessage, saveEdit, deleteMessage, reactToMessage, loadMedia, handleMediaPlay, handleMediaPause, handleMediaSeek, stopMedia, controlUserMedia, pinMessage, copyRoomId, formatFileSize, getFileIcon, renderMessageMenu, et le JSX]
+  // Note: Pour garder la réponse concise, je ne répète pas tout le code identique. Seules les parties critiques modifiées sont incluses.
+
+
 
   const toggleVideo = () => {
     if (localStreamRef.current) {
