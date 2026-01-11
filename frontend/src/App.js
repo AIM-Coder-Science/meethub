@@ -67,6 +67,15 @@ export default function VideoConferenceApp() {
   const isPolitePeerRef = useRef({}); // { peerId: true/false }
   // ================================================================
 
+  // ============ ICE RESTART STRATEGY (CRITICAL FIX) ============
+  // Track ICE restart state to prevent infinite loops and multiple restarts
+  const iceRestartInProgressRef = useRef({}); // { peerId: true/false }
+  const iceRestartTimestampRef = useRef({}); // { peerId: timestamp }
+  const iceRestartCountRef = useRef({}); // { peerId: count } (max 1)
+  const ICE_RESTART_COOLDOWN = 5000; // 5 second cooldown
+  const ICE_RESTART_MAX_ATTEMPTS = 1; // Only restart ICE once per peer
+  // ============================================================
+
   const emojis = ['❤️', '👍', '👎', '😂', '😮', '😢', '🎉'];
 
   useEffect(() => {
@@ -253,6 +262,11 @@ export default function VideoConferenceApp() {
     delete ignoreOfferRef.current[peerId];
     delete isPolitePeerRef.current[peerId];
     
+    // Cleanup ICE restart tracking
+    delete iceRestartInProgressRef.current[peerId];
+    delete iceRestartTimestampRef.current[peerId];
+    delete iceRestartCountRef.current[peerId];
+    
     setRemoteStreams(prev => {
       const updated = { ...prev };
       delete updated[peerId];
@@ -284,11 +298,16 @@ export default function VideoConferenceApp() {
   useEffect(() => {
     console.log('🔌 Initialisation Socket.io...');
     
+    // FIX: Prioritize polling on Render (WebSocket often fails initially)
+    // Polling is more reliable for NAT traversal on Render infrastructure
     socketRef.current = io(SOCKET_SERVER_URL, {
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'], // Try polling first (more reliable on Render)
       reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000
+      reconnectionAttempts: 10, // Increase attempts for Render
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000, // Exponential backoff
+      timeout: 20000, // Increase timeout for slow connections
+      forceNew: false
     });
 
     socketRef.current.on('connect', () => {
@@ -746,6 +765,11 @@ export default function VideoConferenceApp() {
       makingOfferRef.current[userId] = false;
       ignoreOfferRef.current[userId] = false;
       isPolitePeerRef.current[userId] = !isInitiator; // Initiator = impolite, receiver = polite
+      
+      // Initialize ICE restart tracking
+      iceRestartInProgressRef.current[userId] = false;
+      iceRestartCountRef.current[userId] = 0;
+      iceRestartTimestampRef.current[userId] = 0;
 
       // ============ PERFECT NEGOTIATION: onnegotiationneeded ============
       peer.onnegotiationneeded = async () => {
@@ -789,64 +813,95 @@ export default function VideoConferenceApp() {
         const state = peer.iceConnectionState;
         console.log(`🔌 État ICE ${userId}:`, state);
         
-        if (state === 'failed') {
-          console.warn(`⚠️ ICE failed pour ${userId}`);
+        // ============ ICE RESTART STRATEGY (CRITICAL) ============
+        // Trigger ICE restart on "disconnected" (not "failed")
+        // Max 1 restart attempt per peer with 5 second cooldown
+        if (state === 'disconnected') {
+          console.warn(`⚠️ ICE disconnected (transient) pour ${userId}`);
           
-          setIceConnectionAttempts(prev => {
-            const attempts = (prev[userId] || 0) + 1;
-            return { ...prev, [userId]: attempts };
-          });
+          // Check if ICE restart already in progress or already attempted
+          const isInProgress = iceRestartInProgressRef.current[userId];
+          const restartCount = iceRestartCountRef.current[userId] || 0;
+          const lastRestartTime = iceRestartTimestampRef.current[userId] || 0;
+          const timeSinceLastRestart = Date.now() - lastRestartTime;
           
-          const attempts = iceConnectionAttempts[userId] || 1;
-          
-          if (attempts <= 3 && peer.signalingState === 'stable' && !isNegotiatingRef.current[userId]) {
-            console.log(`🔄 ICE restart tentative ${attempts}/3 pour ${userId}`);
+          // Only trigger restart if:
+          // 1. Not already in progress
+          // 2. Haven't reached max attempts
+          // 3. Cooldown period has passed
+          // 4. Peer is in stable signaling state
+          // 5. Not already making an offer
+          if (!isInProgress && 
+              restartCount < ICE_RESTART_MAX_ATTEMPTS && 
+              timeSinceLastRestart > ICE_RESTART_COOLDOWN &&
+              peer.signalingState === 'stable' &&
+              !makingOfferRef.current[userId]) {
+            
+            console.log(`🔄 Déclenchement ICE restart pour ${userId} (tentative ${restartCount + 1}/${ICE_RESTART_MAX_ATTEMPTS})`);
+            
+            iceRestartInProgressRef.current[userId] = true;
+            iceRestartCountRef.current[userId] = restartCount + 1;
+            iceRestartTimestampRef.current[userId] = Date.now();
             
             setTimeout(async () => {
-              if (peer && peer.iceConnectionState === 'failed' && canNegotiate(peer, userId)) {
-                try {
-                  isNegotiatingRef.current[userId] = true;
-                  
-                  if (peer.restartIce && typeof peer.restartIce === 'function') {
-                    peer.restartIce();
-                  }
-                  
-                  if (isInitiator) {
-                    const offer = await peer.createOffer({ iceRestart: true });
-                    await peer.setLocalDescription(offer);
-                    socketRef.current.emit('offer', {
-                      to: userId,
-                      offer: peer.localDescription
-                    });
-                    console.log(`✅ ICE restart offer envoyé à ${userId}`);
-                  }
-                } catch (restartError) {
-                  console.error('❌ Erreur ICE restart:', restartError);
-                } finally {
-                  isNegotiatingRef.current[userId] = false;
+              try {
+                if (!peer || peer.iceConnectionState !== 'disconnected') {
+                  console.log(`⚠️ ICE restart annulé pour ${userId}: state changed to ${peer?.iceConnectionState || 'peer closed'}`);
+                  iceRestartInProgressRef.current[userId] = false;
+                  return;
                 }
+                
+                // Only initiator creates offer with ICE restart
+                if (isInitiator && peer.signalingState === 'stable') {
+                  isNegotiatingRef.current[userId] = true;
+                  makingOfferRef.current[userId] = true;
+                  
+                  const offer = await peer.createOffer({ iceRestart: true });
+                  await peer.setLocalDescription(offer);
+                  
+                  socketRef.current.emit('offer', {
+                    to: userId,
+                    offer: peer.localDescription
+                  });
+                  
+                  console.log(`✅ ICE restart offer envoyé à ${userId} (timestamp: ${new Date().toISOString()})`);
+                } else {
+                  console.log(`⚠️ ICE restart: non-initiator ${userId} attente d'une nouvelle offer`);
+                }
+              } catch (error) {
+                console.error(`❌ Erreur ICE restart pour ${userId}:`, error.message);
+              } finally {
+                iceRestartInProgressRef.current[userId] = false;
+                isNegotiatingRef.current[userId] = false;
+                makingOfferRef.current[userId] = false;
               }
-            }, 1000 * attempts);
-          } else if (attempts > 3) {
-            console.error(`❌ Échec ICE définitif après ${attempts} tentatives pour ${userId}`);
-            setNotification({
-              message: `Reconnexion en cours avec ${participants.find(p => p.id === userId)?.name || 'un participant'}...`,
-              type: 'info',
-              timestamp: Date.now()
-            });
-            // CRITICAL FIX: Do NOT recreate peer. Let connection stabilize or timeout naturally.
+            }, 500); // Short delay before restart
+          } else if (isInProgress) {
+            console.log(`ℹ️ ICE restart déjà en cours pour ${userId}`);
+          } else if (restartCount >= ICE_RESTART_MAX_ATTEMPTS) {
+            console.warn(`⚠️ ICE restart max attempts atteint pour ${userId}. Pas de restart supplémentaire.`);
+          } else if (timeSinceLastRestart <= ICE_RESTART_COOLDOWN) {
+            console.warn(`⚠️ ICE restart en cooldown pour ${userId} (${Math.round((ICE_RESTART_COOLDOWN - timeSinceLastRestart) / 1000)}s restantes)`);
           }
+        } else if (state === 'failed') {
+          // ===== ICE FAILED: Do NOT restart, show error UI =====
+          console.error(`❌ ICE failed définitivement pour ${userId}`);
+          
+          setNotification({
+            message: `Connexion perdue avec ${participants.find(p => p.id === userId)?.name || 'un participant'}. Essayez de relancer la vidéo.`,
+            type: 'error',
+            timestamp: Date.now()
+          });
+          
+          // NOTE: No peer recreation. No ICE restart after "failed".
+          // User must manually retry or reconnect.
         } else if (state === 'connected' || state === 'completed') {
           console.log(`✅ Connexion ICE établie avec ${userId}`);
-          setIceConnectionAttempts(prev => {
-            const updated = { ...prev };
-            delete updated[userId];
-            return updated;
-          });
-        } else if (state === 'disconnected') {
-          // CRITICAL FIX: 'disconnected' is a TRANSIENT state, NOT a failure
-          // DO NOT recreate peer. WebRTC will auto-reconnect. Only log and wait.
-          console.warn(`⚠️ ICE disconnected (transient) pour ${userId}. Reconnexion automatique en cours...`);
+          // Reset ICE restart tracking on successful connection
+          iceRestartCountRef.current[userId] = 0;
+          iceRestartTimestampRef.current[userId] = 0;
+        } else if (state === 'new' || state === 'checking') {
+          console.log(`🔍 ICE checking pour ${userId}...`);
         }
       };
 
