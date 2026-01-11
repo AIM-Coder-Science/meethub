@@ -56,13 +56,19 @@ export default function VideoConferenceApp() {
   const messageMenuRefs = useRef({});
   const messageInputRef = useRef(null);
 
-  // QUEUE ICE CANDIDATES - NOUVELLES RÉFÉRENCES
-  const pendingIceCandidatesRef = useRef({}); // { peerId: [candidate1, candidate2, ...] }
-  const remoteDescriptionsSetRef = useRef({}); // { peerId: true/false }
+  // QUEUE ICE CANDIDATES
+  const pendingIceCandidatesRef = useRef({});
+  const remoteDescriptionsSetRef = useRef({});
+
+  // ============ NOUVEAUX REFS POUR PERFECT NEGOTIATION ============
+  const isNegotiatingRef = useRef({}); // { peerId: true/false }
+  const makingOfferRef = useRef({}); // { peerId: true/false }
+  const ignoreOfferRef = useRef({}); // { peerId: true/false }
+  const isPolitePeerRef = useRef({}); // { peerId: true/false }
+  // ================================================================
 
   const emojis = ['❤️', '👍', '👎', '😂', '😮', '😢', '🎉'];
 
-  // Fermer les menus quand on clique ailleurs
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (showMessageMenu && !messageMenuRefs.current[showMessageMenu]?.contains(event.target)) {
@@ -77,7 +83,6 @@ export default function VideoConferenceApp() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showMessageMenu, showEmojiPicker]);
 
-  // Auto-scroll chat
   const scrollToBottom = () => {
     chatMessagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -86,7 +91,6 @@ export default function VideoConferenceApp() {
     scrollToBottom();
   }, [chatMessages]);
 
-  // Focus automatique sur l'input quand le chat s'ouvre (surtout sur mobile)
   useEffect(() => {
     if (showChat && activeTab === 'chat' && messageInputRef.current) {
       const timer = setTimeout(() => {
@@ -101,7 +105,6 @@ export default function VideoConferenceApp() {
     }
   }, [showChat, activeTab]);
 
-  // Récupérer les credentials TURN dynamiques du backend
   useEffect(() => {
     const fetchTurnCredentials = async () => {
       if (isFetchingTurn) return;
@@ -183,7 +186,6 @@ export default function VideoConferenceApp() {
     return Math.random().toString(36).substring(2, 10).toUpperCase();
   };
 
-  // Nettoyage
   useEffect(() => {
     return () => {
       if (localStreamRef.current) {
@@ -208,25 +210,24 @@ export default function VideoConferenceApp() {
     };
   }, []);
 
-  // FONCTIONS UTILITAIRES POUR LA QUEUE ICE - NOUVEAU
   const addPendingIceCandidate = (peerId, candidate) => {
     if (!pendingIceCandidatesRef.current[peerId]) {
       pendingIceCandidatesRef.current[peerId] = [];
     }
     pendingIceCandidatesRef.current[peerId].push(candidate);
-    console.log(`📥 ICE candidate mis en queue pour ${peerId}: ${candidate.candidate}`);
+    console.log(`📥 ICE candidate mis en queue pour ${peerId}`);
   };
 
   const flushPendingIceCandidates = async (peerId, peer) => {
     const pending = pendingIceCandidatesRef.current[peerId];
     if (!pending || pending.length === 0 || !peer) return;
 
-    console.log(`🔄 Évacuation des ${pending.length} ICE candidates en attente pour ${peerId}`);
+    console.log(`🔄 Évacuation des ${pending.length} ICE candidates pour ${peerId}`);
     
     for (const candidate of pending) {
       try {
         await peer.addIceCandidate(new RTCIceCandidate(candidate));
-        console.log(`✅ ICE candidate évacué pour ${peerId}: ${candidate.candidate}`);
+        console.log(`✅ ICE candidate évacué pour ${peerId}`);
       } catch (error) {
         console.warn(`⚠️ Erreur évacuation ICE candidate pour ${peerId}:`, error.message);
       }
@@ -247,6 +248,10 @@ export default function VideoConferenceApp() {
     
     delete pendingIceCandidatesRef.current[peerId];
     delete remoteDescriptionsSetRef.current[peerId];
+    delete isNegotiatingRef.current[peerId];
+    delete makingOfferRef.current[peerId];
+    delete ignoreOfferRef.current[peerId];
+    delete isPolitePeerRef.current[peerId];
     
     setRemoteStreams(prev => {
       const updated = { ...prev };
@@ -261,7 +266,21 @@ export default function VideoConferenceApp() {
     });
   };
 
-  // Initialiser Socket.io
+  // ============ PERFECT NEGOTIATION HELPER ============
+  const canNegotiate = (peer, peerId) => {
+    if (!peer) return false;
+    if (peer.signalingState !== 'stable') {
+      console.log(`⚠️ Cannot negotiate ${peerId}: signalingState = ${peer.signalingState}`);
+      return false;
+    }
+    if (isNegotiatingRef.current[peerId]) {
+      console.log(`⚠️ Cannot negotiate ${peerId}: already negotiating`);
+      return false;
+    }
+    return true;
+  };
+  // ====================================================
+
   useEffect(() => {
     console.log('🔌 Initialisation Socket.io...');
     
@@ -308,7 +327,6 @@ export default function VideoConferenceApp() {
       }
     });
 
-    // Gestion des médias synchronisés
     socketRef.current.on('media-action', ({ action, type, url, currentTime, pageNumber, lastUpdatedServerTime, isPlaying }) => {
       console.log('🎬 Action média reçue:', action, type);
       
@@ -382,7 +400,6 @@ export default function VideoConferenceApp() {
       }
     });
 
-    // Permissions du créateur
     socketRef.current.on('remote-media-control', ({ action, value, controlledBy }) => {
       console.log(`👑 Contrôle distant: ${action} = ${value} par ${controlledBy}`);
       
@@ -419,7 +436,7 @@ export default function VideoConferenceApp() {
       cleanupPeerData(user.id);
     });
 
-    // GESTION CRITIQUE DES OFFERS/ANSWERS AVEC QUEUE ICE
+    // ============ PERFECT NEGOTIATION PATTERN ============
     socketRef.current.on('offer', async ({ from, offer }) => {
       console.log('📨 OFFRE reçue de:', from);
       
@@ -431,17 +448,25 @@ export default function VideoConferenceApp() {
       }
       
       try {
-        // IMPORTANT: Réinitialiser l'état avant setRemoteDescription
+        // Perfect negotiation: vérifier collision
+        const isPolite = isPolitePeerRef.current[from] || false;
+        const offerCollision = peer.signalingState !== 'stable' || makingOfferRef.current[from];
+        
+        ignoreOfferRef.current[from] = !isPolite && offerCollision;
+        
+        if (ignoreOfferRef.current[from]) {
+          console.log(`⚠️ Offre ignorée (collision, impolite peer): ${from}`);
+          return;
+        }
+        
         remoteDescriptionsSetRef.current[from] = false;
         
         await peer.setRemoteDescription(new RTCSessionDescription(offer));
         console.log(`✅ remoteDescription défini pour ${from}`);
         remoteDescriptionsSetRef.current[from] = true;
         
-        // CRITIQUE: Évacuer les ICE candidates en attente
         await flushPendingIceCandidates(from, peer);
         
-        // Créer et envoyer la réponse
         const answer = await peer.createAnswer();
         await peer.setLocalDescription(answer);
         
@@ -464,14 +489,12 @@ export default function VideoConferenceApp() {
       }
       
       try {
-        // IMPORTANT: Réinitialiser l'état avant setRemoteDescription
         remoteDescriptionsSetRef.current[from] = false;
         
         await peer.setRemoteDescription(new RTCSessionDescription(answer));
         console.log(`✅ remoteDescription défini pour ${from} (answer)`);
         remoteDescriptionsSetRef.current[from] = true;
         
-        // CRITIQUE: Évacuer les ICE candidates en attente
         await flushPendingIceCandidates(from, peer);
         
       } catch (error) {
@@ -479,8 +502,8 @@ export default function VideoConferenceApp() {
         cleanupPeerData(from);
       }
     });
+    // ====================================================
 
-    // GESTION SÉCURISÉE DES ICE CANDIDATES AVEC QUEUE
     socketRef.current.on('ice-candidate', async ({ from, candidate }) => {
       console.log('🧊 ICE CANDIDATE reçu de:', from, candidate?.type);
       
@@ -490,23 +513,19 @@ export default function VideoConferenceApp() {
         return;
       }
       
-      // VÉRIFICATION CRITIQUE: remoteDescription est-il défini?
       const isRemoteDescriptionSet = remoteDescriptionsSetRef.current[from] || peer.remoteDescription;
       
       if (!isRemoteDescriptionSet) {
-        // Stocker dans la queue en attendant setRemoteDescription
         console.log(`📥 ICE candidate mis en attente pour ${from} (remoteDescription non défini)`);
         addPendingIceCandidate(from, candidate);
         return;
       }
       
-      // remoteDescription est défini, ajouter le candidat directement
       if (candidate) {
         try {
           await peer.addIceCandidate(new RTCIceCandidate(candidate));
           console.log(`✅ ICE candidate ajouté directement pour ${from}`);
         } catch (error) {
-          // Ignorer silencieusement les erreurs de candidats périmés
           if (error.toString().includes('Unknown ufrag') || 
               error.toString().includes('The remote description was null') ||
               error.code === 400) {
@@ -518,7 +537,6 @@ export default function VideoConferenceApp() {
       }
     });
 
-    // Gestion du partage d'écran
     socketRef.current.on('user-screen-share-start', ({ userId }) => {
       console.log(`📺 Partage d'écran démarré par ${userId}`);
       createScreenPeerConnection(userId, false);
@@ -685,12 +703,11 @@ export default function VideoConferenceApp() {
     };
   }, []);
 
-  // Créer une connexion peer avec gestion ICE améliorée
+  // ============ CRÉATION PEER CONNECTION AVEC PERFECT NEGOTIATION ============
   const createPeerConnection = async (userId, isInitiator) => {
     try {
       console.log(`🔗 Création peer ${userId} (initiateur: ${isInitiator})`);
       
-      // Nettoyage préventif
       cleanupPeerData(userId);
       
       const configuration = iceConfig || getDefaultIceConfig();
@@ -700,17 +717,58 @@ export default function VideoConferenceApp() {
       const peer = new RTCPeerConnection(configuration);
       peersRef.current[userId] = peer;
       
-      // Initialiser la queue ICE pour ce peer
+      // Initialiser perfect negotiation
       pendingIceCandidatesRef.current[userId] = [];
       remoteDescriptionsSetRef.current[userId] = false;
+      isNegotiatingRef.current[userId] = false;
+      makingOfferRef.current[userId] = false;
+      ignoreOfferRef.current[userId] = false;
+      isPolitePeerRef.current[userId] = !isInitiator; // Initiator = impolite, receiver = polite
 
-      // Gestion robuste de l'état de la connexion
+      // ============ PERFECT NEGOTIATION: onnegotiationneeded ============
+      peer.onnegotiationneeded = async () => {
+        console.log(`🔄 Negotiation needed pour ${userId}`);
+        
+        if (!canNegotiate(peer, userId)) {
+          console.log(`⚠️ Negotiation refusée pour ${userId}`);
+          return;
+        }
+        
+        try {
+          isNegotiatingRef.current[userId] = true;
+          makingOfferRef.current[userId] = true;
+          
+          const offer = await peer.createOffer();
+          
+          // Double-check signalingState avant setLocalDescription
+          if (peer.signalingState !== 'stable') {
+            console.log(`⚠️ signalingState non stable, abandon offer pour ${userId}`);
+            return;
+          }
+          
+          await peer.setLocalDescription(offer);
+          
+          socketRef.current.emit('offer', {
+            to: userId,
+            offer: peer.localDescription
+          });
+          
+          console.log(`✅ Offre créée et envoyée à ${userId}`);
+        } catch (error) {
+          console.error(`❌ Erreur création offer pour ${userId}:`, error);
+        } finally {
+          makingOfferRef.current[userId] = false;
+          isNegotiatingRef.current[userId] = false;
+        }
+      };
+      // ==================================================================
+
       peer.oniceconnectionstatechange = () => {
         const state = peer.iceConnectionState;
         console.log(`🔌 État ICE ${userId}:`, state);
         
-        if (state === 'failed' || state === 'disconnected') {
-          console.warn(`⚠️ Problème de connexion ICE pour ${userId}: ${state}`);
+        if (state === 'failed') {
+          console.warn(`⚠️ ICE failed pour ${userId}`);
           
           setIceConnectionAttempts(prev => {
             const attempts = (prev[userId] || 0) + 1;
@@ -719,35 +777,38 @@ export default function VideoConferenceApp() {
           
           const attempts = iceConnectionAttempts[userId] || 1;
           
-          if (attempts <= 3) {
-            console.log(`🔄 Tentative de récupération ICE ${attempts}/3 pour ${userId}`);
+          if (attempts <= 3 && peer.signalingState === 'stable' && !isNegotiatingRef.current[userId]) {
+            console.log(`🔄 ICE restart tentative ${attempts}/3 pour ${userId}`);
             
-            setTimeout(() => {
-              if (peer && (peer.iceConnectionState === 'failed' || peer.iceConnectionState === 'disconnected')) {
-                console.log(`🔄 Redémarrage ICE pour ${userId}`);
+            setTimeout(async () => {
+              if (peer && peer.iceConnectionState === 'failed' && canNegotiate(peer, userId)) {
                 try {
+                  isNegotiatingRef.current[userId] = true;
+                  
                   if (peer.restartIce && typeof peer.restartIce === 'function') {
                     peer.restartIce();
                   }
                   
                   if (isInitiator) {
-                    peer.createOffer().then(offer => {
-                      peer.setLocalDescription(offer);
-                      socketRef.current.emit('offer', {
-                        to: userId,
-                        offer: peer.localDescription
-                      });
-                    }).catch(err => console.error('❌ Erreur recréation offer:', err));
+                    const offer = await peer.createOffer({ iceRestart: true });
+                    await peer.setLocalDescription(offer);
+                    socketRef.current.emit('offer', {
+                      to: userId,
+                      offer: peer.localDescription
+                    });
+                    console.log(`✅ ICE restart offer envoyé à ${userId}`);
                   }
                 } catch (restartError) {
-                  console.error('❌ Erreur restartIce:', restartError);
+                  console.error('❌ Erreur ICE restart:', restartError);
+                } finally {
+                  isNegotiatingRef.current[userId] = false;
                 }
               }
             }, 1000 * attempts);
-          } else {
-            console.error(`❌ Échec de connexion ICE après ${attempts} tentatives pour ${userId}`);
+          } else if (attempts > 3) {
+            console.error(`❌ Échec ICE définitif après ${attempts} tentatives pour ${userId}`);
             setNotification({
-              message: `Impossible de se connecter à ${participants.find(p => p.id === userId)?.name || 'un participant'}. Vérifiez votre réseau.`,
+              message: `Impossible de se connecter à ${participants.find(p => p.id === userId)?.name || 'un participant'}`,
               type: 'error',
               timestamp: Date.now()
             });
@@ -760,6 +821,8 @@ export default function VideoConferenceApp() {
             delete updated[userId];
             return updated;
           });
+        } else if (state === 'disconnected') {
+          console.warn(`⚠️ ICE disconnected pour ${userId}, attente...`);
         }
       };
 
@@ -768,10 +831,10 @@ export default function VideoConferenceApp() {
         console.log(`🔌 État connexion ${userId}:`, state);
         
         if (state === 'failed') {
-          console.error(`❌ Échec de connexion WebRTC pour ${userId}`);
+          console.error(`❌ Connexion failed pour ${userId}`);
           setTimeout(() => {
             if (peer && peer.connectionState === 'failed') {
-              console.log(`🔄 Recréation de la connexion pour ${userId}`);
+              console.log(`🔄 Recréation connexion pour ${userId}`);
               cleanupPeerData(userId);
               createPeerConnection(userId, isInitiator);
             }
@@ -781,9 +844,12 @@ export default function VideoConferenceApp() {
 
       peer.onsignalingstatechange = () => {
         console.log(`📡 État signaling ${userId}:`, peer.signalingState);
+        if (peer.signalingState === 'stable') {
+          isNegotiatingRef.current[userId] = false;
+          makingOfferRef.current[userId] = false;
+        }
       };
 
-      // Ajouter les tracks locales si le stream existe
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(track => {
           console.log(`🎯 Ajout track ${track.kind} (enabled: ${track.enabled}) à peer ${userId}`);
@@ -795,21 +861,16 @@ export default function VideoConferenceApp() {
             
             if (!trackAlreadyExists) {
               peer.addTrack(track, localStreamRef.current);
-              console.log(`✅ Track ${track.kind} ajouté avec succès à peer ${userId}`);
+              console.log(`✅ Track ${track.kind} ajouté à peer ${userId}`);
             } else {
               console.log(`ℹ️ Track ${track.kind} déjà présent dans peer ${userId}`);
             }
           } catch (error) {
             console.error(`❌ Erreur ajout track ${track.kind} à peer ${userId}:`, error);
-            const sender = peer.getSenders().find(s => s.track && s.track.kind === track.kind);
-            if (sender && sender.replaceTrack) {
-              sender.replaceTrack(track).catch(err => console.error('Erreur replaceTrack:', err));
-            }
           }
         });
       }
 
-      // Écouter les changements de track
       peer.ontrack = (event) => {
         console.log(`📹 Track reçu de ${userId}:`, event.track?.kind, event.track?.enabled);
         
@@ -827,7 +888,7 @@ export default function VideoConferenceApp() {
             const existingTrack = existing.getTracks().find(t => t.id === event.track.id);
             if (!existingTrack) {
               existing.addTrack(event.track);
-              console.log(`➕ Track ${event.track.kind} ajouté au stream existant de ${userId}`);
+              console.log(`➕ Track ${event.track.kind} ajouté au stream de ${userId}`);
             } else {
               existingTrack.enabled = event.track.enabled;
               console.log(`🔄 Track ${event.track.kind} mis à jour pour ${userId}`);
@@ -837,7 +898,6 @@ export default function VideoConferenceApp() {
               const videoElement = remoteVideosRef.current[userId];
               if (videoElement) {
                 videoElement.srcObject = existing;
-                console.log(`🎬 Vidéo attachée pour ${userId} (stream existant)`);
               }
             }, 100);
             
@@ -848,13 +908,12 @@ export default function VideoConferenceApp() {
               newStream.addTrack(event.track);
             }
             
-            console.log(`✅ Nouveau stream créé pour ${userId}, tracks:`, newStream.getTracks().length);
+            console.log(`✅ Nouveau stream pour ${userId}, tracks:`, newStream.getTracks().length);
             
             setTimeout(() => {
               const videoElement = remoteVideosRef.current[userId];
               if (videoElement) {
                 videoElement.srcObject = newStream;
-                console.log(`🎬 Vidéo attachée pour ${userId} (nouveau stream)`);
               }
             }, 100);
             
@@ -865,29 +924,28 @@ export default function VideoConferenceApp() {
 
       peer.onicecandidate = (event) => {
         if (event.candidate) {
-          console.log(`🧊 ICE candidate généré pour ${userId} (type: ${event.candidate.type})`);
+          console.log(`🧊 ICE candidate généré pour ${userId}`);
           socketRef.current.emit('ice-candidate', {
             to: userId,
             candidate: event.candidate
           });
         } else {
-          console.log(`✅ Fin de génération des ICE candidates pour ${userId}`);
+          console.log(`✅ Fin génération ICE candidates pour ${userId}`);
         }
       };
 
       peer.onicecandidateerror = (event) => {
         console.error(`❌ Erreur ICE candidate pour ${userId}:`, event.errorCode, event.errorText);
-        if (event.errorCode === 701) {
-          console.warn(`⚠️ Serveur STUN/TURN inaccessible pour ${userId}, continuation avec d'autres méthodes`);
-        }
       };
 
       if (isInitiator) {
         try {
+          isNegotiatingRef.current[userId] = true;
+          makingOfferRef.current[userId] = true;
+          
           const offerOptions = {
             offerToReceiveAudio: true,
-            offerToReceiveVideo: true,
-            iceRestart: false
+            offerToReceiveVideo: true
           };
           
           const offer = await peer.createOffer(offerOptions);
@@ -901,6 +959,9 @@ export default function VideoConferenceApp() {
           });
         } catch (error) {
           console.error('❌ Erreur création offer:', error);
+        } finally {
+          makingOfferRef.current[userId] = false;
+          isNegotiatingRef.current[userId] = false;
         }
       }
 
@@ -912,7 +973,6 @@ export default function VideoConferenceApp() {
     }
   };
 
-  // Fonction helper pour la configuration ICE par défaut
   const getDefaultIceConfig = () => {
     return {
       iceServers: [
@@ -927,7 +987,6 @@ export default function VideoConferenceApp() {
     };
   };
 
-  // Créer une connexion peer pour le partage d'écran
   const createScreenPeerConnection = async (userId, isInitiator) => {
     try {
       if (screenPeersRef.current[userId]) {
@@ -1134,11 +1193,7 @@ export default function VideoConferenceApp() {
     console.log('✅ Salle quittée avec succès');
   };
 
-  // [Le reste du code reste inchangé : toggleVideo, toggleAudio, toggleScreenShare, handleFileSelect, uploadFile, sendMessage, editMessage, saveEdit, deleteMessage, reactToMessage, loadMedia, handleMediaPlay, handleMediaPause, handleMediaSeek, stopMedia, controlUserMedia, pinMessage, copyRoomId, formatFileSize, getFileIcon, renderMessageMenu, et le JSX]
-  // Note: Pour garder la réponse concise, je ne répète pas tout le code identique. Seules les parties critiques modifiées sont incluses.
-
-
-
+  // ============ TOGGLE VIDEO - AUCUNE RENÉGOCIATION ============
   const toggleVideo = () => {
     if (localStreamRef.current) {
       const videoTrack = localStreamRef.current.getVideoTracks()[0];
@@ -1146,37 +1201,15 @@ export default function VideoConferenceApp() {
         const newState = !videoTrack.enabled;
         videoTrack.enabled = newState;
         setIsVideoOn(newState);
-        console.log(`🎥 Vidéo ${newState ? 'activée' : 'désactivée'}`);
+        console.log(`🎥 Vidéo ${newState ? 'activée' : 'désactivée'} - AUCUNE RENÉGOCIATION`);
         
-        Object.entries(peersRef.current).forEach(([userId, peer]) => {
-          if (peer) {
-            const senders = peer.getSenders();
-            const sender = senders.find(s => s.track && s.track.kind === 'video');
-            if (sender && sender.track) {
-              sender.track.enabled = newState;
-            }
-            
-            if (newState && videoTrack) {
-              const hasTrack = senders.some(s => s.track && s.track.id === videoTrack.id);
-              if (!hasTrack) {
-                peer.addTrack(videoTrack, localStreamRef.current);
-                peer.createOffer().then(offer => {
-                  peer.setLocalDescription(offer);
-                  socketRef.current.emit('offer', {
-                    to: userId,
-                    offer: peer.localDescription
-                  });
-                }).catch(err => console.error('Erreur création offer:', err));
-              }
-            }
-          }
-        });
-        
+        // Notifier les autres participants via Socket.io SEULEMENT
         socketRef.current.emit('toggle-video', { roomId, isVideoOn: newState });
       }
     }
   };
 
+  // ============ TOGGLE AUDIO - AUCUNE RENÉGOCIATION ============
   const toggleAudio = () => {
     if (localStreamRef.current) {
       const audioTrack = localStreamRef.current.getAudioTracks()[0];
@@ -1184,38 +1217,16 @@ export default function VideoConferenceApp() {
         const newState = !audioTrack.enabled;
         audioTrack.enabled = newState;
         setIsAudioOn(newState);
-        console.log(`🎤 Audio ${newState ? 'activé' : 'désactivé'}`);
+        console.log(`🎤 Audio ${newState ? 'activé' : 'désactivé'} - AUCUNE RENÉGOCIATION`);
         
-        Object.entries(peersRef.current).forEach(([userId, peer]) => {
-          if (peer) {
-            const senders = peer.getSenders();
-            const sender = senders.find(s => s.track && s.track.kind === 'audio');
-            if (sender && sender.track) {
-              sender.track.enabled = newState;
-            }
-            
-            if (newState && audioTrack) {
-              const hasTrack = senders.some(s => s.track && s.track.id === audioTrack.id);
-              if (!hasTrack) {
-                peer.addTrack(audioTrack, localStreamRef.current);
-                peer.createOffer().then(offer => {
-                  peer.setLocalDescription(offer);
-                  socketRef.current.emit('offer', {
-                    to: userId,
-                    offer: peer.localDescription
-                  });
-                }).catch(err => console.error('Erreur création offer audio:', err));
-              }
-            }
-          }
-        });
-        
+        // Notifier les autres participants via Socket.io SEULEMENT
         socketRef.current.emit('toggle-audio', { roomId, isAudioOn: newState });
       } else {
         console.warn('⚠️ Aucun track audio trouvé');
       }
     }
   };
+  // ==============================================================
 
   const toggleScreenShare = async () => {
     if (isScreenSharing) {
@@ -1342,7 +1353,6 @@ export default function VideoConferenceApp() {
       setMessageInput('');
       setSelectedFile(null);
       
-      // Remettre le focus sur l'input après l'envoi (surtout sur mobile)
       setTimeout(() => {
         messageInputRef.current?.focus();
       }, 100);
@@ -1400,7 +1410,6 @@ export default function VideoConferenceApp() {
     setShowMessageMenu(null);
   };
 
-  // Gestion des médias
   const loadMedia = async (file) => {
     if (!isCreator) {
       alert('Seul le créateur de la salle peut partager des médias');
@@ -1532,7 +1541,6 @@ export default function VideoConferenceApp() {
     setShowMediaPlayer(false);
   };
 
-  // Contrôle des autres utilisateurs
   const controlUserMedia = (targetUserId, action, value) => {
     if (!isCreator) {
       alert('Seul le créateur peut contrôler les autres participants');
@@ -1680,7 +1688,6 @@ export default function VideoConferenceApp() {
 
   return (
     <div className="video-room">
-      {/* Notification */}
       {notification && (
         <div className={`notification notification-${notification.type}`}>
           <span>{notification.message}</span>
@@ -1741,7 +1748,6 @@ export default function VideoConferenceApp() {
             </div>
           )}
 
-          {/* Lecteur de médias synchronisé */}
           {showMediaPlayer && mediaState && (
             <div className="media-player-container">
               <div className="media-player-header">
@@ -1761,14 +1767,6 @@ export default function VideoConferenceApp() {
                     onPlay={handleMediaPlay}
                     onPause={handleMediaPause}
                     onSeeked={(e) => handleMediaSeek(e.target.currentTime)}
-                    onTimeUpdate={(e) => {
-                      if (!isReceivingRemoteUpdate.current && isCreator && mediaState) {
-                        const now = Date.now();
-                        const timeSinceLastUpdate = now - (mediaState.lastUpdatedServerTime || 0);
-                        if (timeSinceLastUpdate > 500) {
-                        }
-                      }
-                    }}
                     className="media-player-element"
                   />
                 )}
@@ -1780,14 +1778,6 @@ export default function VideoConferenceApp() {
                     onPlay={handleMediaPlay}
                     onPause={handleMediaPause}
                     onSeeked={(e) => handleMediaSeek(e.target.currentTime)}
-                    onTimeUpdate={(e) => {
-                      if (!isReceivingRemoteUpdate.current && isCreator && mediaState) {
-                        const now = Date.now();
-                        const timeSinceLastUpdate = now - (mediaState.lastUpdatedServerTime || 0);
-                        if (timeSinceLastUpdate > 500) {
-                        }
-                      }
-                    }}
                     className="media-player-audio"
                   />
                 )}
@@ -1839,7 +1829,6 @@ export default function VideoConferenceApp() {
             </div>
           )}
 
-          {/* Bouton pour charger un média */}
           {isCreator && !showMediaPlayer && (
             <div className="media-upload-section">
               <input
@@ -1860,7 +1849,6 @@ export default function VideoConferenceApp() {
           )}
 
           <div className="videos-grid">
-            {/* Local Video */}
             <div className="video-tile local-video">
               <video
                 ref={localVideoRef}
@@ -1885,7 +1873,6 @@ export default function VideoConferenceApp() {
               )}
             </div>
 
-            {/* Remote Videos */}
             {participants.filter(p => !p.isLocal).map((participant) => {
               const hasVideo = remoteStreams[participant.id] && userVideoStatus[participant.id] !== false;
               const stream = remoteStreams[participant.id];
@@ -1904,11 +1891,6 @@ export default function VideoConferenceApp() {
                         if (stream.getVideoTracks().length > 0) {
                           stream.getVideoTracks().forEach(track => {
                             track.enabled = !videoDisabled;
-                          });
-                        }
-                        if (stream.getAudioTracks().length > 0) {
-                          stream.getAudioTracks().forEach(track => {
-                            console.log(`🎤 Audio track ${participant.id}: enabled=${track.enabled}`);
                           });
                         }
                       }
@@ -1937,7 +1919,6 @@ export default function VideoConferenceApp() {
               );
             })}
 
-            {/* Screen Shares */}
             {Object.entries(screenStreams).map(([userId, stream]) => {
               const participant = participants.find(p => p.id === userId);
               return (
@@ -2124,15 +2105,6 @@ export default function VideoConferenceApp() {
                   </div>
 
                   <div className="chat-input-container">
-                    {false && selectedFile && (
-                      <div className="file-preview">
-                        <span>{getFileIcon(selectedFile.type)} {selectedFile.name}</span>
-                        <button onClick={() => setSelectedFile(null)} className="remove-file-btn">
-                          <X size={14} />
-                        </button>
-                      </div>
-                    )}
-                    
                     <div className="chat-input">
                       <input
                         ref={messageInputRef}
@@ -2150,14 +2122,6 @@ export default function VideoConferenceApp() {
                         autoComplete="off"
                         inputMode="text"
                         enterKeyHint="send"
-                      />
-                      <input
-                        type="file"
-                        ref={fileInputRef}
-                        onChange={handleFileSelect}
-                        style={{ display: 'none' }}
-                        accept="image/*,audio/*,video/*,.pdf"
-                        disabled
                       />
                       <button onClick={sendMessage} className="send-btn" disabled={!messageInput.trim()}>
                         <Send size={20} />
