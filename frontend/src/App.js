@@ -481,22 +481,32 @@ export default function VideoConferenceApp() {
 
     socketRef.current.on('answer', async ({ from, answer }) => {
       console.log('📨 RÉPONSE reçue de:', from);
-      
+
       const peer = peersRef.current[from];
       if (!peer) {
         console.warn(`⚠️ Aucun peer trouvé pour ${from}, réponse ignorée`);
         return;
       }
-      
+
+      // ============ PERFECT NEGOTIATION: CRITICAL FIX ============
+      // NEVER call setRemoteDescription(answer) unless signalingState === "have-local-offer"
+      // This prevents "InvalidStateError: Called in wrong state: stable"
+      if (peer.signalingState !== 'have-local-offer') {
+        console.log(`⚠️ Answer IGNORÉ - signalingState: ${peer.signalingState} (attendu: have-local-offer)`);
+        console.log(`   Raison: Recevoir un answer en état "${peer.signalingState}" indique un double-answer ou une collision`);
+        return;
+      }
+      // ===========================================================
+
       try {
         remoteDescriptionsSetRef.current[from] = false;
-        
+
         await peer.setRemoteDescription(new RTCSessionDescription(answer));
         console.log(`✅ remoteDescription défini pour ${from} (answer)`);
         remoteDescriptionsSetRef.current[from] = true;
-        
+
         await flushPendingIceCandidates(from, peer);
-        
+
       } catch (error) {
         console.error(`❌ Erreur traitement answer de ${from}:`, error);
         cleanupPeerData(from);
