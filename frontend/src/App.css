@@ -1161,9 +1161,11 @@ html, body {
 .chat-input-container {
   padding: 0.875rem;
   border-top: 1px solid var(--border);
-  background: rgba(20, 24, 36, 0.6);
-  position: relative;
-  z-index: 1;
+  background: rgba(20, 24, 36, 0.95);
+  backdrop-filter: blur(8px);
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
   /* S'assurer que le conteneur n'empêche pas le clavier */
   -webkit-transform: translateZ(0);
   transform: translateZ(0);
@@ -1221,6 +1223,10 @@ html, body {
   /* Assurer que l'input peut recevoir le focus sur mobile */
   -webkit-user-select: text;
   user-select: text;
+  /* Important pour mobile : permettre le focus et le clavier */
+  pointer-events: auto;
+  -webkit-user-modify: read-write-plaintext-only;
+  user-modify: read-write-plaintext-only;
 }
 
 .message-input:focus {
@@ -1911,8 +1917,11 @@ html, body {
   
   .chat-input-container {
     padding: 0.75rem;
-    position: relative;
-    z-index: 1;
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+    background: rgba(20, 24, 36, 0.95);
+    backdrop-filter: blur(8px);
     /* S'assurer que le conteneur n'empêche pas le clavier */
     -webkit-transform: translateZ(0);
     transform: translateZ(0);
@@ -1921,15 +1930,22 @@ html, body {
   .message-input {
     font-size: 0.85rem;
     padding: 0.5rem 0.75rem;
-    min-height: 36px;
+    min-height: 44px; /* Taille minimale recommandée pour mobile (44x44px) */
     -webkit-appearance: none;
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
+    pointer-events: auto;
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-user-modify: read-write-plaintext-only;
+    user-modify: read-write-plaintext-only;
   }
   
   .message-input:focus {
     -webkit-user-select: text;
     user-select: text;
+    /* Forcer le focus visible sur mobile */
+    -webkit-tap-highlight-color: rgba(0, 212, 255, 0.2);
   }
   
   .attach-btn, .send-btn {

@@ -54,6 +54,7 @@ export default function VideoConferenceApp() {
   const chatMessagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const messageMenuRefs = useRef({});
+  const messageInputRef = useRef(null);
 
   const emojis = ['❤️', '👍', '👎', '😂', '😮', '😢', '🎉'];
 
@@ -81,7 +82,24 @@ export default function VideoConferenceApp() {
     scrollToBottom();
   }, [chatMessages]);
 
-  // Récupérer les credentials TURN dynamiques du backend - CORRECTION CORS
+  // Focus automatique sur l'input quand le chat s'ouvre (surtout sur mobile)
+  useEffect(() => {
+    if (showChat && activeTab === 'chat' && messageInputRef.current) {
+      // Petit délai pour s'assurer que le sidebar est complètement ouvert
+      const timer = setTimeout(() => {
+        messageInputRef.current?.focus();
+        // Sur mobile, forcer le scroll vers le bas pour voir l'input
+        if (window.innerWidth <= 900) {
+          setTimeout(() => {
+            messageInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 300);
+        }
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [showChat, activeTab]);
+
+  // Récupérer les credentials TURN dynamiques du backend
   useEffect(() => {
     const fetchTurnCredentials = async () => {
       if (isFetchingTurn) return;
@@ -90,13 +108,11 @@ export default function VideoConferenceApp() {
       try {
         console.log('🔄 Récupération des credentials TURN...');
         
-        // REMOVE credentials: 'include' pour éviter l'erreur CORS
         const response = await fetch(`${SOCKET_SERVER_URL}/api/turn-credentials`, {
           method: 'GET',
           headers: {
             'Content-Type': 'application/json',
           },
-          // Supprimer credentials: 'include' car le serveur utilise Access-Control-Allow-Origin: *
           mode: 'cors'
         });
         
@@ -108,15 +124,12 @@ export default function VideoConferenceApp() {
         console.log('📡 Données TURN reçues:', data);
         
         if (data.iceServers && Array.isArray(data.iceServers)) {
-          // Construction de la configuration ICE complète
           const config = {
             iceServers: [
-              // STUN servers par défaut (priorité basse)
               { urls: 'stun:stun.l.google.com:19302' },
               { urls: 'stun:stun1.l.google.com:19302' },
               { urls: 'stun:stun2.l.google.com:19302' },
               { urls: 'stun:stun.voipbuster.com:3478' },
-              // Ajout des serveurs TURN dynamiques
               ...data.iceServers.map(server => ({
                 urls: server.urls,
                 username: server.username || '',
@@ -133,7 +146,6 @@ export default function VideoConferenceApp() {
           setIceConfig(config);
           console.log('✅ Configuration ICE complète chargée avec TURN');
           
-          // Pour compatibilité avec le code existant
           setIceServers(data.iceServers);
         } else {
           console.warn('⚠️ Format de données TURN invalide, utilisation des STUN par défaut');
@@ -141,7 +153,6 @@ export default function VideoConferenceApp() {
         }
       } catch (error) {
         console.error('❌ Erreur récupération TURN credentials:', error);
-        // Configuration de fallback
         setIceConfig(getDefaultIceConfig());
       } finally {
         setIsFetchingTurn(false);
@@ -150,7 +161,6 @@ export default function VideoConferenceApp() {
     
     fetchTurnCredentials();
     
-    // Fonction helper pour la configuration par défaut
     function getDefaultIceConfig() {
       return {
         iceServers: [
@@ -183,13 +193,23 @@ export default function VideoConferenceApp() {
       if (socketRef.current) {
         socketRef.current.disconnect();
       }
-      Object.values(peersRef.current).forEach(peer => peer?.close());
-      Object.values(screenPeersRef.current).forEach(peer => peer?.close());
+      Object.values(peersRef.current).forEach(peer => {
+        if (peer && typeof peer.close === 'function') {
+          peer.close();
+        }
+      });
+      Object.values(screenPeersRef.current).forEach(peer => {
+        if (peer && typeof peer.close === 'function') {
+          peer.close();
+        }
+      });
     };
   }, []);
 
-  // Initialiser Socket.io
+  // Initialiser Socket.io - DÉPENDANCES MINIMALES
   useEffect(() => {
+    console.log('🔌 Initialisation Socket.io...');
+    
     socketRef.current = io(SOCKET_SERVER_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
@@ -203,6 +223,7 @@ export default function VideoConferenceApp() {
     });
 
     socketRef.current.on('disconnect', () => {
+      console.log('❌ Déconnecté du serveur');
       setConnectionStatus('Déconnecté');
       setHasJoinedRoom(false);
     });
@@ -226,7 +247,6 @@ export default function VideoConferenceApp() {
         setIsCreator(creatorStatus || false);
         console.log(`✅ Rejoint la salle ${roomId}, créateur: ${creatorStatus || false}`);
         
-        // Demander l'état initial du média
         if (socketRef.current) {
           socketRef.current.emit('get-media-state', { roomId });
         }
@@ -341,14 +361,27 @@ export default function VideoConferenceApp() {
     socketRef.current.on('user-left', (user) => {
       console.log('👋 Utilisateur parti:', user);
       removeParticipant(user.id);
+      
+      // NETTOYAGE ROBUSTE DES PEERS
       if (peersRef.current[user.id]) {
-        peersRef.current[user.id].close();
+        try {
+          peersRef.current[user.id].close();
+          console.log(`🔒 Peer ${user.id} fermé proprement`);
+        } catch (err) {
+          console.warn(`⚠️ Erreur fermeture peer ${user.id}:`, err);
+        }
         delete peersRef.current[user.id];
       }
+      
       if (screenPeersRef.current[user.id]) {
-        screenPeersRef.current[user.id].close();
+        try {
+          screenPeersRef.current[user.id].close();
+        } catch (err) {
+          console.warn(`⚠️ Erreur fermeture screen peer ${user.id}:`, err);
+        }
         delete screenPeersRef.current[user.id];
       }
+      
       setRemoteStreams(prev => {
         const updated = { ...prev };
         delete updated[user.id];
@@ -396,14 +429,35 @@ export default function VideoConferenceApp() {
       }
     });
 
+    // GESTION SÉCURISÉE DES ICE CANDIDATES - CORRECTION "Unknown ufrag"
     socketRef.current.on('ice-candidate', async ({ from, candidate }) => {
-      console.log('🧊 ICE CANDIDATE reçu de:', from);
+      console.log('🧊 ICE CANDIDATE reçu de:', from, candidate?.type);
+      
       const peer = peersRef.current[from];
-      if (peer && peer.remoteDescription) {
+      if (!peer) {
+        console.warn(`⚠️ Aucun peer trouvé pour ${from}, candidat ignoré`);
+        return;
+      }
+      
+      // CONDITION CRITIQUE : Ne traiter que si remoteDescription est défini
+      if (!peer.remoteDescription) {
+        console.warn(`⚠️ remoteDescription non défini pour ${from}, candidat mis en attente`);
+        return;
+      }
+      
+      if (candidate) {
         try {
           await peer.addIceCandidate(new RTCIceCandidate(candidate));
+          console.log(`✅ ICE candidate ajouté pour ${from}`);
         } catch (error) {
-          console.error('❌ Erreur ajout ICE candidate:', error);
+          // Ignorer silencieusement les erreurs de candidats périmés
+          if (error.toString().includes('Unknown ufrag') || 
+              error.toString().includes('The remote description was null') ||
+              error.code === 400) {
+            console.warn(`⚠️ Candidat ICE périmé pour ${from}, ignoré:`, error.message);
+          } else {
+            console.error(`❌ Erreur ajout ICE candidate pour ${from}:`, error);
+          }
         }
       }
     });
@@ -417,7 +471,11 @@ export default function VideoConferenceApp() {
     socketRef.current.on('user-screen-share-stop', ({ userId }) => {
       console.log(`📺 Partage d'écran arrêté par ${userId}`);
       if (screenPeersRef.current[userId]) {
-        screenPeersRef.current[userId].close();
+        try {
+          screenPeersRef.current[userId].close();
+        } catch (err) {
+          console.warn(`⚠️ Erreur fermeture screen peer ${userId}:`, err);
+        }
         delete screenPeersRef.current[userId];
       }
       setScreenStreams(prev => {
@@ -470,8 +528,21 @@ export default function VideoConferenceApp() {
     });
 
     socketRef.current.on('chat-message', (message) => {
-      console.log('💬 Nouveau message:', message);
-      setChatMessages(prev => [...prev, message]);
+      console.log('💬 Nouveau message reçu:', message);
+      if (message && message.id) {
+        setChatMessages(prev => {
+          // Éviter les doublons
+          const exists = prev.find(m => m.id === message.id);
+          if (exists) {
+            console.log('⚠️ Message déjà présent, ignoré:', message.id);
+            return prev;
+          }
+          console.log('✅ Message ajouté au chat');
+          return [...prev, message];
+        });
+      } else {
+        console.warn('⚠️ Message invalide reçu:', message);
+      }
     });
 
     socketRef.current.on('chat-history', (messages) => {
@@ -553,17 +624,35 @@ export default function VideoConferenceApp() {
 
     return () => {
       if (socketRef.current) {
+        console.log('🔌 Nettoyage socket...');
         socketRef.current.disconnect();
       }
     };
-  }, []);
+  }, []); // Dépendances vides - initialisation unique
 
-  // Créer une connexion peer normale avec configuration ICE dynamique
+  // Créer une connexion peer avec nettoyage préventif
   const createPeerConnection = async (userId, isInitiator) => {
     try {
       console.log(`🔗 Création peer ${userId} (initiateur: ${isInitiator})`);
       
-      // Utiliser la configuration ICE ou la configuration par défaut
+      // NETTOYAGE PRÉVENTIF : Fermer l'ancien peer s'il existe
+      if (peersRef.current[userId]) {
+        console.log(`🧹 Nettoyage ancien peer ${userId} avant recréation`);
+        try {
+          peersRef.current[userId].close();
+        } catch (err) {
+          console.warn(`⚠️ Erreur fermeture ancien peer ${userId}:`, err);
+        }
+        delete peersRef.current[userId];
+      }
+      
+      // Nettoyer les références de stream
+      setRemoteStreams(prev => {
+        const updated = { ...prev };
+        delete updated[userId];
+        return updated;
+      });
+      
       const configuration = iceConfig || getDefaultIceConfig();
       
       console.log('⚙️ Configuration ICE utilisée:', configuration.iceServers);
@@ -590,10 +679,12 @@ export default function VideoConferenceApp() {
             console.log(`🔄 Tentative de récupération ICE ${attempts}/3 pour ${userId}`);
             
             setTimeout(() => {
-              if (peer.iceConnectionState === 'failed' || peer.iceConnectionState === 'disconnected') {
+              if (peer && (peer.iceConnectionState === 'failed' || peer.iceConnectionState === 'disconnected')) {
                 console.log(`🔄 Redémarrage ICE pour ${userId}`);
                 try {
-                  peer.restartIce();
+                  if (peer.restartIce && typeof peer.restartIce === 'function') {
+                    peer.restartIce();
+                  }
                   
                   if (isInitiator) {
                     peer.createOffer().then(offer => {
@@ -634,9 +725,13 @@ export default function VideoConferenceApp() {
         if (state === 'failed') {
           console.error(`❌ Échec de connexion WebRTC pour ${userId}`);
           setTimeout(() => {
-            if (peer.connectionState === 'failed') {
+            if (peer && peer.connectionState === 'failed') {
               console.log(`🔄 Recréation de la connexion pour ${userId}`);
-              peer.close();
+              try {
+                peer.close();
+              } catch (err) {
+                console.warn(`⚠️ Erreur fermeture peer failed ${userId}:`, err);
+              }
               delete peersRef.current[userId];
               createPeerConnection(userId, isInitiator);
             }
@@ -653,12 +748,21 @@ export default function VideoConferenceApp() {
         localStreamRef.current.getTracks().forEach(track => {
           console.log(`🎯 Ajout track ${track.kind} (enabled: ${track.enabled}) à peer ${userId}`);
           try {
-            peer.addTrack(track, localStreamRef.current);
-            console.log(`✅ Track ${track.kind} ajouté avec succès à peer ${userId}`);
+            const existingSenders = peer.getSenders();
+            const trackAlreadyExists = existingSenders.some(sender => 
+              sender.track && sender.track.kind === track.kind
+            );
+            
+            if (!trackAlreadyExists) {
+              peer.addTrack(track, localStreamRef.current);
+              console.log(`✅ Track ${track.kind} ajouté avec succès à peer ${userId}`);
+            } else {
+              console.log(`ℹ️ Track ${track.kind} déjà présent dans peer ${userId}`);
+            }
           } catch (error) {
             console.error(`❌ Erreur ajout track ${track.kind} à peer ${userId}:`, error);
             const sender = peer.getSenders().find(s => s.track && s.track.kind === track.kind);
-            if (sender) {
+            if (sender && sender.replaceTrack) {
               sender.replaceTrack(track).catch(err => console.error('Erreur replaceTrack:', err));
             }
           }
@@ -782,9 +886,20 @@ export default function VideoConferenceApp() {
     };
   };
 
-  // Créer une connexion peer pour le partage d'écran
+  // Créer une connexion peer pour le partage d'écran avec nettoyage préventif
   const createScreenPeerConnection = async (userId, isInitiator) => {
     try {
+      // NETTOYAGE PRÉVENTIF
+      if (screenPeersRef.current[userId]) {
+        console.log(`🧹 Nettoyage ancien screen peer ${userId}`);
+        try {
+          screenPeersRef.current[userId].close();
+        } catch (err) {
+          console.warn(`⚠️ Erreur fermeture screen peer ${userId}:`, err);
+        }
+        delete screenPeersRef.current[userId];
+      }
+      
       const configuration = iceConfig || getDefaultIceConfig();
       
       const peer = new RTCPeerConnection(configuration);
@@ -920,7 +1035,6 @@ export default function VideoConferenceApp() {
       setIsInRoom(true);
       setParticipants([{ id: socketRef.current?.id || 'local', name: userName, isLocal: true }]);
       
-      // Attendre que la configuration ICE soit chargée
       if (!iceConfig && isFetchingTurn) {
         console.log('⏳ En attente de la configuration ICE...');
         await new Promise(resolve => setTimeout(resolve, 1500));
@@ -948,15 +1062,23 @@ export default function VideoConferenceApp() {
     
     Object.entries(peersRef.current).forEach(([id, peer]) => {
       if (peer) {
-        peer.close();
-        console.log(`🔒 Peer ${id} fermé`);
+        try {
+          peer.close();
+          console.log(`🔒 Peer ${id} fermé`);
+        } catch (err) {
+          console.warn(`⚠️ Erreur fermeture peer ${id}:`, err);
+        }
       }
     });
     
     Object.entries(screenPeersRef.current).forEach(([id, peer]) => {
       if (peer) {
-        peer.close();
-        console.log(`🔒 Screen peer ${id} fermé`);
+        try {
+          peer.close();
+          console.log(`🔒 Screen peer ${id} fermé`);
+        } catch (err) {
+          console.warn(`⚠️ Erreur fermeture screen peer ${id}:`, err);
+        }
       }
     });
     
@@ -1069,7 +1191,11 @@ export default function VideoConferenceApp() {
       
       Object.values(screenPeersRef.current).forEach(peer => {
         if (peer) {
-          peer.close();
+          try {
+            peer.close();
+          } catch (err) {
+            console.warn(`⚠️ Erreur fermeture screen peer:`, err);
+          }
         }
       });
       screenPeersRef.current = {};
@@ -1152,21 +1278,42 @@ export default function VideoConferenceApp() {
   };
 
   const sendMessage = async () => {
-    if (!messageInput.trim()) return;
-    if (!hasJoinedRoom) return;
+    const trimmedMessage = messageInput.trim();
+    if (!trimmedMessage) {
+      console.log('⚠️ Message vide, envoi annulé');
+      return;
+    }
+    if (!hasJoinedRoom) {
+      console.log('⚠️ Pas encore dans la salle, envoi annulé');
+      return;
+    }
+    if (!socketRef.current || !socketRef.current.connected) {
+      console.log('⚠️ Socket non connecté, envoi annulé');
+      return;
+    }
 
-    console.log('💬 Envoi du message...');
-    socketRef.current.emit('chat-message', { 
-      roomId, 
-      message: messageInput,
-      fileUrl: null,
-      fileName: null,
-      fileType: null,
-      fileSize: null
-    });
-    
-    setMessageInput('');
-    setSelectedFile(null);
+    console.log('💬 Envoi du message:', trimmedMessage);
+    try {
+      socketRef.current.emit('chat-message', { 
+        roomId, 
+        message: trimmedMessage,
+        fileUrl: null,
+        fileName: null,
+        fileType: null,
+        fileSize: null
+      });
+      
+      setMessageInput('');
+      setSelectedFile(null);
+      
+      // Remettre le focus sur l'input après l'envoi (surtout sur mobile)
+      setTimeout(() => {
+        messageInputRef.current?.focus();
+      }, 100);
+    } catch (error) {
+      console.error('❌ Erreur lors de l\'envoi du message:', error);
+      alert('Erreur lors de l\'envoi du message. Veuillez réessayer.');
+    }
   };
 
   const editMessage = (messageId, currentText) => {
@@ -1952,12 +2099,21 @@ export default function VideoConferenceApp() {
                     
                     <div className="chat-input">
                       <input
+                        ref={messageInputRef}
                         type="text"
                         value={messageInput}
                         onChange={(e) => setMessageInput(e.target.value)}
-                        onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            sendMessage();
+                          }
+                        }}
                         placeholder="Écrivez un message..."
                         className="message-input"
+                        autoComplete="off"
+                        inputMode="text"
+                        enterKeyHint="send"
                       />
                       <input
                         type="file"
