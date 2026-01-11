@@ -23,7 +23,7 @@ export default function VideoConferenceApp() {
   const [connectionStatus, setConnectionStatus] = useState('Déconnecté');
   const [hasJoinedRoom, setHasJoinedRoom] = useState(false);
   const [iceServers, setIceServers] = useState([]);
-  const [iceConfig, setIceConfig] = useState(null); // Nouvel état pour la configuration ICE
+  const [iceConfig, setIceConfig] = useState(null);
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editingText, setEditingText] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
@@ -32,15 +32,16 @@ export default function VideoConferenceApp() {
   const [pinnedMessages, setPinnedMessages] = useState([]);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('chat');
-  const [userVideoStatus, setUserVideoStatus] = useState({}); // {userId: isVideoOn}
+  const [userVideoStatus, setUserVideoStatus] = useState({});
   const [notification, setNotification] = useState(null);
   const [isCreator, setIsCreator] = useState(false);
-  const [mediaState, setMediaState] = useState(null); // { type, url, isPlaying, currentTime, lastUpdatedServerTime, pageNumber }
+  const [mediaState, setMediaState] = useState(null);
   const [showMediaPlayer, setShowMediaPlayer] = useState(false);
+  const [isFetchingTurn, setIsFetchingTurn] = useState(false);
   const mediaPlayerRef = useRef(null);
-  const mediaSyncThreshold = 2000; // 2 secondes
+  const mediaSyncThreshold = 2000;
   const isReceivingRemoteUpdate = useRef(false);
-  const [iceConnectionAttempts, setIceConnectionAttempts] = useState({}); // Suivi des tentatives par peer
+  const [iceConnectionAttempts, setIceConnectionAttempts] = useState({});
   
   const socketRef = useRef(null);
   const localVideoRef = useRef(null);
@@ -80,18 +81,23 @@ export default function VideoConferenceApp() {
     scrollToBottom();
   }, [chatMessages]);
 
-  // Récupérer les credentials TURN dynamiques du backend
+  // Récupérer les credentials TURN dynamiques du backend - CORRECTION CORS
   useEffect(() => {
     const fetchTurnCredentials = async () => {
+      if (isFetchingTurn) return;
+      
+      setIsFetchingTurn(true);
       try {
         console.log('🔄 Récupération des credentials TURN...');
         
+        // REMOVE credentials: 'include' pour éviter l'erreur CORS
         const response = await fetch(`${SOCKET_SERVER_URL}/api/turn-credentials`, {
           method: 'GET',
           headers: {
             'Content-Type': 'application/json',
           },
-          credentials: 'include'
+          // Supprimer credentials: 'include' car le serveur utilise Access-Control-Allow-Origin: *
+          mode: 'cors'
         });
         
         if (!response.ok) {
@@ -110,15 +116,15 @@ export default function VideoConferenceApp() {
               { urls: 'stun:stun1.l.google.com:19302' },
               { urls: 'stun:stun2.l.google.com:19302' },
               { urls: 'stun:stun.voipbuster.com:3478' },
-              // Ajout des serveurs TURN dynamiques (priorité haute)
+              // Ajout des serveurs TURN dynamiques
               ...data.iceServers.map(server => ({
                 urls: server.urls,
-                username: server.username,
-                credential: server.credential,
-                credentialType: 'password'
+                username: server.username || '',
+                credential: server.credential || '',
+                credentialType: server.credentialType || 'password'
               }))
             ],
-            iceTransportPolicy: 'all', // Essayer relay puis public puis private
+            iceTransportPolicy: 'all',
             iceCandidatePoolSize: 10,
             bundlePolicy: 'max-bundle',
             rtcpMuxPolicy: 'require'
@@ -137,6 +143,8 @@ export default function VideoConferenceApp() {
         console.error('❌ Erreur récupération TURN credentials:', error);
         // Configuration de fallback
         setIceConfig(getDefaultIceConfig());
+      } finally {
+        setIsFetchingTurn(false);
       }
     };
     
@@ -245,9 +253,8 @@ export default function VideoConferenceApp() {
         if (mediaPlayerRef.current && mediaState) {
           const player = mediaPlayerRef.current;
           const timeDiff = Date.now() - (lastUpdatedServerTime || Date.now());
-          const adjustedTime = currentTime + (timeDiff / 1000); // Convertir en secondes
+          const adjustedTime = currentTime + (timeDiff / 1000);
           
-          // Seulement forcer le seek si la différence est > 2 secondes (seuil de synchronisation)
           if (Math.abs(player.currentTime - adjustedTime) > mediaSyncThreshold / 1000) {
             player.currentTime = adjustedTime;
           }
@@ -272,7 +279,6 @@ export default function VideoConferenceApp() {
           lastUpdatedServerTime: lastUpdatedServerTime || Date.now()
         }));
         
-        // Mettre à jour le PDF viewer
         if (mediaPlayerRef.current && mediaPlayerRef.current.src) {
           const iframe = document.querySelector('.pdf-viewer');
           if (iframe) {
@@ -301,7 +307,7 @@ export default function VideoConferenceApp() {
       }
     });
 
-    // Permissions du créateur : contrôler les autres utilisateurs
+    // Permissions du créateur
     socketRef.current.on('remote-media-control', ({ action, value, controlledBy }) => {
       console.log(`👑 Contrôle distant: ${action} = ${value} par ${controlledBy}`);
       
@@ -353,7 +359,6 @@ export default function VideoConferenceApp() {
         delete updated[user.id];
         return updated;
       });
-      // Nettoyer le suivi des tentatives
       setIceConnectionAttempts(prev => {
         const updated = { ...prev };
         delete updated[user.id];
@@ -509,10 +514,8 @@ export default function VideoConferenceApp() {
     socketRef.current.on('user-video-toggle', ({ userId, userName, isVideoOn }) => {
       console.log('🎥 Vidéo toggle:', userId, userName, isVideoOn);
       
-      // Mettre à jour le statut vidéo de l'utilisateur
       setUserVideoStatus(prev => ({ ...prev, [userId]: isVideoOn }));
       
-      // Afficher une notification
       if (userName) {
         setNotification({
           message: `${userName} a ${isVideoOn ? 'activé' : 'coupé'} sa caméra`,
@@ -520,13 +523,11 @@ export default function VideoConferenceApp() {
           timestamp: Date.now()
         });
         
-        // Masquer la notification après 3 secondes
         setTimeout(() => {
           setNotification(null);
         }, 3000);
       }
       
-      // Si la vidéo est coupée, mettre à jour le stream pour masquer la vidéo
       setRemoteStreams(prev => {
         const stream = prev[userId];
         if (stream) {
@@ -534,12 +535,10 @@ export default function VideoConferenceApp() {
             track.enabled = isVideoOn;
           });
           
-          // Mettre à jour l'élément vidéo
           setTimeout(() => {
             const videoElement = remoteVideosRef.current[userId];
             if (videoElement) {
               videoElement.srcObject = stream;
-              // Forcer la mise à jour
               videoElement.load();
             }
           }, 50);
@@ -550,7 +549,6 @@ export default function VideoConferenceApp() {
 
     socketRef.current.on('user-audio-toggle', ({ userId, isAudioOn }) => {
       console.log('🎤 Audio toggle:', userId, isAudioOn);
-      // Mettre à jour l'interface si nécessaire
     });
 
     return () => {
@@ -565,18 +563,8 @@ export default function VideoConferenceApp() {
     try {
       console.log(`🔗 Création peer ${userId} (initiateur: ${isInitiator})`);
       
-      // Utiliser la configuration ICE récupérée ou la configuration par défaut
-      const configuration = iceConfig || {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' }
-        ],
-        iceCandidatePoolSize: 10,
-        iceTransportPolicy: 'all',
-        bundlePolicy: 'max-bundle',
-        rtcpMuxPolicy: 'require'
-      };
+      // Utiliser la configuration ICE ou la configuration par défaut
+      const configuration = iceConfig || getDefaultIceConfig();
       
       console.log('⚙️ Configuration ICE utilisée:', configuration.iceServers);
       
@@ -591,7 +579,6 @@ export default function VideoConferenceApp() {
         if (state === 'failed' || state === 'disconnected') {
           console.warn(`⚠️ Problème de connexion ICE pour ${userId}: ${state}`);
           
-          // Tentative de récupération
           setIceConnectionAttempts(prev => {
             const attempts = (prev[userId] || 0) + 1;
             return { ...prev, [userId]: attempts };
@@ -599,17 +586,15 @@ export default function VideoConferenceApp() {
           
           const attempts = iceConnectionAttempts[userId] || 1;
           
-          if (attempts <= 3) { // Maximum 3 tentatives
+          if (attempts <= 3) {
             console.log(`🔄 Tentative de récupération ICE ${attempts}/3 pour ${userId}`);
             
             setTimeout(() => {
               if (peer.iceConnectionState === 'failed' || peer.iceConnectionState === 'disconnected') {
                 console.log(`🔄 Redémarrage ICE pour ${userId}`);
                 try {
-                  // Réinitialiser la connexion ICE
                   peer.restartIce();
                   
-                  // Recréer l'offre si nous sommes l'initiateur
                   if (isInitiator) {
                     peer.createOffer().then(offer => {
                       peer.setLocalDescription(offer);
@@ -623,7 +608,7 @@ export default function VideoConferenceApp() {
                   console.error('❌ Erreur restartIce:', restartError);
                 }
               }
-            }, 1000 * attempts); // Délai exponentiel
+            }, 1000 * attempts);
           } else {
             console.error(`❌ Échec de connexion ICE après ${attempts} tentatives pour ${userId}`);
             setNotification({
@@ -634,7 +619,6 @@ export default function VideoConferenceApp() {
           }
         } else if (state === 'connected' || state === 'completed') {
           console.log(`✅ Connexion ICE établie avec ${userId}`);
-          // Réinitialiser le compteur de tentatives
           setIceConnectionAttempts(prev => {
             const updated = { ...prev };
             delete updated[userId];
@@ -649,14 +633,11 @@ export default function VideoConferenceApp() {
         
         if (state === 'failed') {
           console.error(`❌ Échec de connexion WebRTC pour ${userId}`);
-          // Essayer de recréer la connexion
           setTimeout(() => {
             if (peer.connectionState === 'failed') {
               console.log(`🔄 Recréation de la connexion pour ${userId}`);
-              // Fermer l'ancienne connexion
               peer.close();
               delete peersRef.current[userId];
-              // Recréer une nouvelle connexion
               createPeerConnection(userId, isInitiator);
             }
           }, 2000);
@@ -676,7 +657,6 @@ export default function VideoConferenceApp() {
             console.log(`✅ Track ${track.kind} ajouté avec succès à peer ${userId}`);
           } catch (error) {
             console.error(`❌ Erreur ajout track ${track.kind} à peer ${userId}:`, error);
-            // Essayer d'ajouter avec replaceTrack si le track existe déjà
             const sender = peer.getSenders().find(s => s.track && s.track.kind === track.kind);
             if (sender) {
               sender.replaceTrack(track).catch(err => console.error('Erreur replaceTrack:', err));
@@ -685,7 +665,7 @@ export default function VideoConferenceApp() {
         });
       }
 
-      // Écouter les changements de track (quand quelqu'un ajoute/retire des tracks)
+      // Écouter les changements de track
       peer.ontrack = (event) => {
         console.log(`📹 Track reçu de ${userId}:`, event.track?.kind, event.track?.enabled);
         
@@ -696,24 +676,19 @@ export default function VideoConferenceApp() {
         
         const stream = event.streams && event.streams.length > 0 ? event.streams[0] : null;
         
-        // Mettre à jour le stream existant ou créer un nouveau
         setRemoteStreams(prev => {
           const existing = prev[userId];
           
           if (existing) {
-            // Si un stream existe déjà, vérifier si le track existe déjà
             const existingTrack = existing.getTracks().find(t => t.id === event.track.id);
             if (!existingTrack) {
-              // Ajouter le nouveau track au stream existant
               existing.addTrack(event.track);
               console.log(`➕ Track ${event.track.kind} ajouté au stream existant de ${userId}`);
             } else {
-              // Mettre à jour le track existant
               existingTrack.enabled = event.track.enabled;
               console.log(`🔄 Track ${event.track.kind} mis à jour pour ${userId}`);
             }
             
-            // Attacher le stream à l'élément vidéo
             setTimeout(() => {
               const videoElement = remoteVideosRef.current[userId];
               if (videoElement) {
@@ -724,7 +699,6 @@ export default function VideoConferenceApp() {
             
             return { ...prev, [userId]: existing };
           } else {
-            // Créer un nouveau stream
             const newStream = stream || new MediaStream();
             if (!stream && event.track) {
               newStream.addTrack(event.track);
@@ -732,7 +706,6 @@ export default function VideoConferenceApp() {
             
             console.log(`✅ Nouveau stream créé pour ${userId}, tracks:`, newStream.getTracks().length);
             
-            // Attacher le stream à l'élément vidéo
             setTimeout(() => {
               const videoElement = remoteVideosRef.current[userId];
               if (videoElement) {
@@ -760,7 +733,6 @@ export default function VideoConferenceApp() {
 
       peer.onicecandidateerror = (event) => {
         console.error(`❌ Erreur ICE candidate pour ${userId}:`, event.errorCode, event.errorText);
-        // Ne pas bloquer pour les erreurs mineures
         if (event.errorCode === 701) {
           console.warn(`⚠️ Serveur STUN/TURN inaccessible pour ${userId}, continuation avec d'autres méthodes`);
         }
@@ -776,12 +748,6 @@ export default function VideoConferenceApp() {
           
           const offer = await peer.createOffer(offerOptions);
           console.log(`📤 OFFRE créée pour ${userId}`);
-          
-          // Configurer les codecs préférés pour une meilleure compatibilité
-          if (offer.sdp) {
-            // Optimisation SDP pour une meilleure compatibilité
-            offer.sdp = optimizeSdp(offer.sdp);
-          }
           
           await peer.setLocalDescription(offer);
           
@@ -801,36 +767,29 @@ export default function VideoConferenceApp() {
     }
   };
 
-  // Optimisation SDP pour une meilleure compatibilité
-  const optimizeSdp = (sdp) => {
-    let optimized = sdp;
-    
-    // Forcer l'utilisation de VP8 pour une meilleure compatibilité
-    optimized = optimized.replace(/a=rtpmap:.* VP9\//g, '');
-    optimized = optimized.replace(/a=rtpmap:.* H264\//g, '');
-    
-    // Ajouter des paramètres pour améliorer la stabilité
-    optimized += '\r\na=ice-lite\r\n';
-    optimized += 'a=ice-options:trickle\r\n';
-    
-    return optimized;
+  // Fonction helper pour la configuration ICE par défaut
+  const getDefaultIceConfig = () => {
+    return {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' }
+      ],
+      iceCandidatePoolSize: 10,
+      iceTransportPolicy: 'all',
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require'
+    };
   };
 
   // Créer une connexion peer pour le partage d'écran
   const createScreenPeerConnection = async (userId, isInitiator) => {
     try {
-      const configuration = iceConfig || {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ],
-        iceCandidatePoolSize: 10
-      };
+      const configuration = iceConfig || getDefaultIceConfig();
       
       const peer = new RTCPeerConnection(configuration);
       screenPeersRef.current[userId] = peer;
 
-      // Gestion des états de connexion pour le partage d'écran
       peer.oniceconnectionstatechange = () => {
         console.log(`🔌 État ICE (écran) ${userId}:`, peer.iceConnectionState);
       };
@@ -961,13 +920,12 @@ export default function VideoConferenceApp() {
       setIsInRoom(true);
       setParticipants([{ id: socketRef.current?.id || 'local', name: userName, isLocal: true }]);
       
-      // Attendre que la configuration ICE soit chargée si nécessaire
-      if (!iceConfig) {
+      // Attendre que la configuration ICE soit chargée
+      if (!iceConfig && isFetchingTurn) {
         console.log('⏳ En attente de la configuration ICE...');
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 1500));
       }
       
-      // Attendre un peu que le stream soit prêt
       setTimeout(() => {
         socketRef.current.emit('join-room', { roomId, userName });
         setHasJoinedRoom(true);
@@ -979,7 +937,6 @@ export default function VideoConferenceApp() {
   const leaveRoom = () => {
     console.log('🚪 Quitter la salle...');
     
-    // Arrêter tous les streams
     [localStreamRef.current, screenStreamRef.current].forEach(stream => {
       if (stream) {
         stream.getTracks().forEach(track => {
@@ -989,7 +946,6 @@ export default function VideoConferenceApp() {
       }
     });
     
-    // Fermer toutes les connexions peer
     Object.entries(peersRef.current).forEach(([id, peer]) => {
       if (peer) {
         peer.close();
@@ -1006,16 +962,12 @@ export default function VideoConferenceApp() {
     
     peersRef.current = {};
     screenPeersRef.current = {};
-    
-    // Réinitialiser le suivi des tentatives
     setIceConnectionAttempts({});
     
-    // Notifier le serveur
     if (socketRef.current) {
       socketRef.current.emit('leave-room', { roomId });
     }
     
-    // Réinitialiser l'état
     setIsInRoom(false);
     setParticipants([]);
     setChatMessages([]);
@@ -1038,7 +990,6 @@ export default function VideoConferenceApp() {
         setIsVideoOn(newState);
         console.log(`🎥 Vidéo ${newState ? 'activée' : 'désactivée'}`);
         
-        // Mettre à jour tous les peers avec le nouveau track
         Object.entries(peersRef.current).forEach(([userId, peer]) => {
           if (peer) {
             const senders = peer.getSenders();
@@ -1047,12 +998,10 @@ export default function VideoConferenceApp() {
               sender.track.enabled = newState;
             }
             
-            // Si le track est activé, s'assurer qu'il est bien dans la connexion
             if (newState && videoTrack) {
               const hasTrack = senders.some(s => s.track && s.track.id === videoTrack.id);
               if (!hasTrack) {
                 peer.addTrack(videoTrack, localStreamRef.current);
-                // Recréer l'offer si nécessaire
                 peer.createOffer().then(offer => {
                   peer.setLocalDescription(offer);
                   socketRef.current.emit('offer', {
@@ -1079,7 +1028,6 @@ export default function VideoConferenceApp() {
         setIsAudioOn(newState);
         console.log(`🎤 Audio ${newState ? 'activé' : 'désactivé'}`);
         
-        // Mettre à jour tous les peers avec le nouveau track audio
         Object.entries(peersRef.current).forEach(([userId, peer]) => {
           if (peer) {
             const senders = peer.getSenders();
@@ -1088,12 +1036,10 @@ export default function VideoConferenceApp() {
               sender.track.enabled = newState;
             }
             
-            // Si le track est activé, s'assurer qu'il est bien dans la connexion
             if (newState && audioTrack) {
               const hasTrack = senders.some(s => s.track && s.track.id === audioTrack.id);
               if (!hasTrack) {
                 peer.addTrack(audioTrack, localStreamRef.current);
-                // Recréer l'offer si nécessaire
                 peer.createOffer().then(offer => {
                   peer.setLocalDescription(offer);
                   socketRef.current.emit('offer', {
@@ -1115,7 +1061,6 @@ export default function VideoConferenceApp() {
 
   const toggleScreenShare = async () => {
     if (isScreenSharing) {
-      // Arrêter le partage
       console.log('🖥️ Arrêt du partage d\'écran...');
       if (screenStreamRef.current) {
         screenStreamRef.current.getTracks().forEach(track => track.stop());
@@ -1207,7 +1152,7 @@ export default function VideoConferenceApp() {
   };
 
   const sendMessage = async () => {
-    if (!messageInput.trim()) return; // Pas de fichiers, seulement du texte
+    if (!messageInput.trim()) return;
     if (!hasJoinedRoom) return;
 
     console.log('💬 Envoi du message...');
@@ -1254,22 +1199,17 @@ export default function VideoConferenceApp() {
   const reactToMessage = (messageId, reaction) => {
     console.log('😀 Réaction au message:', messageId, reaction);
     
-    // Vérifier si l'utilisateur a déjà cette réaction
     const message = chatMessages.find(m => m.id === messageId);
     const currentUserId = socketRef.current?.id;
     
     if (message && message.reactions && message.reactions[reaction]) {
       const hasThisReaction = message.reactions[reaction].includes(currentUserId);
-      // Si l'utilisateur a déjà cette réaction, on la retire (pas d'émission)
       if (hasThisReaction) {
-        // Le serveur gérera la suppression
         socketRef.current.emit('react-message', { roomId, messageId, reaction });
       } else {
-        // Sinon, on l'ajoute (remplace les autres)
         socketRef.current.emit('react-message', { roomId, messageId, reaction });
       }
     } else {
-      // Nouvelle réaction
       socketRef.current.emit('react-message', { roomId, messageId, reaction });
     }
     
@@ -1277,7 +1217,7 @@ export default function VideoConferenceApp() {
     setShowMessageMenu(null);
   };
 
-  // Gestion des médias (seul le créateur peut contrôler)
+  // Gestion des médias
   const loadMedia = async (file) => {
     if (!isCreator) {
       alert('Seul le créateur de la salle peut partager des médias');
@@ -1297,7 +1237,6 @@ export default function VideoConferenceApp() {
       return;
     }
 
-    // Uploader le fichier
     const formData = new FormData();
     formData.append('file', file);
 
@@ -1310,7 +1249,6 @@ export default function VideoConferenceApp() {
       if (!response.ok) throw new Error('Upload échoué');
       const data = await response.json();
 
-      // Envoyer l'action load au serveur
       socketRef.current.emit('media-action', {
         roomId,
         action: 'load',
@@ -1336,7 +1274,7 @@ export default function VideoConferenceApp() {
   const handleMediaPlay = () => {
     if (!isCreator || !mediaPlayerRef.current) return;
     
-    if (isReceivingRemoteUpdate.current) return; // Éviter la boucle de feedback
+    if (isReceivingRemoteUpdate.current) return;
     
     const player = mediaPlayerRef.current;
     const currentTime = player.currentTime || 0;
@@ -1411,7 +1349,7 @@ export default function VideoConferenceApp() {
     setShowMediaPlayer(false);
   };
 
-  // Contrôle des autres utilisateurs (créateur uniquement)
+  // Contrôle des autres utilisateurs
   const controlUserMedia = (targetUserId, action, value) => {
     if (!isCreator) {
       alert('Seul le créateur peut contrôler les autres participants');
@@ -1505,9 +1443,9 @@ export default function VideoConferenceApp() {
               <span className="status-dot"></span>
               {connectionStatus}
             </div>
-            <div className={`ice-status ${iceConfig ? 'configured' : 'pending'}`}>
+            <div className={`ice-status ${iceConfig ? 'configured' : isFetchingTurn ? 'pending' : 'error'}`}>
               <span className="ice-dot"></span>
-              {iceConfig ? 'TURN/NAT configuré' : 'Configuration réseau...'}
+              {iceConfig ? 'TURN/NAT configuré' : isFetchingTurn ? 'Configuration réseau...' : 'Réseau par défaut'}
             </div>
           </div>
 
@@ -1539,14 +1477,14 @@ export default function VideoConferenceApp() {
               </div>
             </div>
 
-            <button onClick={joinRoom} className="join-btn" disabled={!iceConfig}>
-              <span>{iceConfig ? 'Rejoindre la salle' : 'Chargement de la configuration...'}</span>
+            <button onClick={joinRoom} className="join-btn">
+              <span>Rejoindre la salle</span>
               <div className="btn-glow"></div>
             </button>
           </div>
 
           <div className="features-list">
-            <div className="feature">✓ Traversée NAT (TURN/Twilio)</div>
+            <div className="feature">✓ Traversée NAT (STUN/TURN)</div>
             <div className="feature">✓ 100+ participants</div>
             <div className="feature">✓ Qualité HD</div>
             <div className="feature">✓ Partage d'écran</div>
@@ -1575,12 +1513,10 @@ export default function VideoConferenceApp() {
             const shouldOpen = !isMobileMenuOpen;
             setIsMobileMenuOpen(shouldOpen);
             if (shouldOpen) {
-              // Si on ouvre le menu, afficher le chat par défaut
               setActiveTab('chat');
               setShowChat(true);
               setShowParticipants(false);
             } else {
-              // Si on ferme, tout fermer
               setShowChat(false);
               setShowParticipants(false);
             }
@@ -1594,16 +1530,15 @@ export default function VideoConferenceApp() {
               {copied ? <Check size={14} /> : <Copy size={14} />}
             </button>
           </div>
-          <div className="ice-indicator" title="Configuration TURN/NAT active">
-            <div className="ice-dot active"></div>
-            <span>Réseau optimisé</span>
+          <div className="ice-indicator" title={iceConfig ? "Configuration TURN/NAT active" : "Utilisation de STUN par défaut"}>
+            <div className={`ice-dot ${iceConfig ? 'active' : 'warning'}`}></div>
+            <span>{iceConfig ? 'Réseau optimisé' : 'STUN seulement'}</span>
           </div>
         </div>
         <button onClick={() => { 
           setShowParticipants(!showParticipants); 
           setActiveTab('participants');
           setShowChat(false);
-          // Sur mobile, ouvrir le menu
           const isMobile = window.innerWidth <= 480;
           if (isMobile && !showParticipants) {
             setIsMobileMenuOpen(true);
@@ -1645,11 +1580,9 @@ export default function VideoConferenceApp() {
                     onSeeked={(e) => handleMediaSeek(e.target.currentTime)}
                     onTimeUpdate={(e) => {
                       if (!isReceivingRemoteUpdate.current && isCreator && mediaState) {
-                        // Ne pas envoyer de mises à jour trop fréquentes
                         const now = Date.now();
                         const timeSinceLastUpdate = now - (mediaState.lastUpdatedServerTime || 0);
-                        if (timeSinceLastUpdate > 500) { // Mettre à jour toutes les 500ms
-                          // Ne rien faire ici, la synchronisation est gérée par les événements play/pause/seek
+                        if (timeSinceLastUpdate > 500) {
                         }
                       }
                     }}
@@ -1666,11 +1599,9 @@ export default function VideoConferenceApp() {
                     onSeeked={(e) => handleMediaSeek(e.target.currentTime)}
                     onTimeUpdate={(e) => {
                       if (!isReceivingRemoteUpdate.current && isCreator && mediaState) {
-                        // Ne pas envoyer de mises à jour trop fréquentes
                         const now = Date.now();
                         const timeSinceLastUpdate = now - (mediaState.lastUpdatedServerTime || 0);
-                        if (timeSinceLastUpdate > 500) { // Mettre à jour toutes les 500ms
-                          // Ne rien faire ici, la synchronisation est gérée par les événements play/pause/seek
+                        if (timeSinceLastUpdate > 500) {
                         }
                       }
                     }}
@@ -1725,7 +1656,7 @@ export default function VideoConferenceApp() {
             </div>
           )}
 
-          {/* Bouton pour charger un média (créateur uniquement) */}
+          {/* Bouton pour charger un média */}
           {isCreator && !showMediaPlayer && (
             <div className="media-upload-section">
               <input
@@ -1735,7 +1666,7 @@ export default function VideoConferenceApp() {
                 onChange={(e) => {
                   const file = e.target.files[0];
                   if (file) loadMedia(file);
-                  e.target.value = ''; // Réinitialiser pour permettre de sélectionner le même fichier
+                  e.target.value = '';
                 }}
                 style={{ display: 'none' }}
               />
@@ -1786,17 +1717,14 @@ export default function VideoConferenceApp() {
                       remoteVideosRef.current[participant.id] = el;
                       if (stream) {
                         el.srcObject = stream;
-                        el.muted = false; // Important : ne pas muter pour entendre l'audio
-                        // Mettre à jour l'état enabled des tracks
+                        el.muted = false;
                         if (stream.getVideoTracks().length > 0) {
                           stream.getVideoTracks().forEach(track => {
                             track.enabled = !videoDisabled;
                           });
                         }
-                        // S'assurer que les tracks audio sont actifs
                         if (stream.getAudioTracks().length > 0) {
                           stream.getAudioTracks().forEach(track => {
-                            // Les tracks audio sont gérés par l'utilisateur distant
                             console.log(`🎤 Audio track ${participant.id}: enabled=${track.enabled}`);
                           });
                         }
@@ -1869,7 +1797,6 @@ export default function VideoConferenceApp() {
                     setActiveTab('chat'); 
                     setShowChat(true); 
                     setShowParticipants(false);
-                    // Sur mobile, s'assurer que le menu est ouvert
                     const isMobile = window.innerWidth <= 900;
                     if (isMobile) {
                       setIsMobileMenuOpen(true);
@@ -1884,7 +1811,6 @@ export default function VideoConferenceApp() {
                     setActiveTab('participants'); 
                     setShowParticipants(true); 
                     setShowChat(false);
-                    // Sur mobile, s'assurer que le menu est ouvert
                     const isMobile = window.innerWidth <= 900;
                     if (isMobile) {
                       setIsMobileMenuOpen(true);
@@ -2015,7 +1941,6 @@ export default function VideoConferenceApp() {
                   </div>
 
                   <div className="chat-input-container">
-                    {/* Prévisualisation de fichier désactivée */}
                     {false && selectedFile && (
                       <div className="file-preview">
                         <span>{getFileIcon(selectedFile.type)} {selectedFile.name}</span>
@@ -2034,7 +1959,6 @@ export default function VideoConferenceApp() {
                         placeholder="Écrivez un message..."
                         className="message-input"
                       />
-                      {/* Désactivation de l'envoi de fichiers - bouton caché */}
                       <input
                         type="file"
                         ref={fileInputRef}
@@ -2043,10 +1967,6 @@ export default function VideoConferenceApp() {
                         accept="image/*,audio/*,video/*,.pdf"
                         disabled
                       />
-                      {/* Bouton d'attachement désactivé et caché */}
-                      {/* <button onClick={() => fileInputRef.current?.click()} className="attach-btn" title="Joindre un fichier" style={{ display: 'none' }}>
-                        <Paperclip size={20} />
-                      </button> */}
                       <button onClick={sendMessage} className="send-btn" disabled={!messageInput.trim()}>
                         <Send size={20} />
                       </button>
@@ -2067,7 +1987,6 @@ export default function VideoConferenceApp() {
                         {participant.isLocal && <span className="you-badge">Vous</span>}
                         {participant.isCreator && <span className="creator-badge">👑 Créateur</span>}
                       </div>
-                      {/* Contrôles du créateur */}
                       {isCreator && !participant.isLocal && (
                         <div className="participant-controls">
                           <button
@@ -2114,7 +2033,6 @@ export default function VideoConferenceApp() {
             setShowChat(shouldShow);
             setActiveTab('chat');
             setShowParticipants(false);
-            // Sur mobile, ouvrir aussi le menu
             const isMobile = window.innerWidth <= 900;
             if (isMobile && shouldShow) {
               setIsMobileMenuOpen(true);
