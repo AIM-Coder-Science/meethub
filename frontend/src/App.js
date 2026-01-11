@@ -103,22 +103,19 @@ export default function VideoConferenceApp() {
         
         if (data.iceServers && Array.isArray(data.iceServers)) {
           // Construction de la configuration ICE complète
-          // Les serveurs TURN (avec credentials) doivent être en priorité
-          const turnServers = data.iceServers.filter(s => s.username && s.credential);
-          const stunServers = data.iceServers.filter(s => !s.username || !s.credential);
-          
           const config = {
             iceServers: [
-              // TURN servers en priorité (pour traverser NAT/firewall)
-              ...turnServers.map(server => ({
+              // STUN servers par défaut (priorité basse)
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun1.l.google.com:19302' },
+              { urls: 'stun:stun2.l.google.com:19302' },
+              { urls: 'stun:stun.voipbuster.com:3478' },
+              // Ajout des serveurs TURN dynamiques (priorité haute)
+              ...data.iceServers.map(server => ({
                 urls: server.urls,
                 username: server.username,
                 credential: server.credential,
                 credentialType: 'password'
-              })),
-              // STUN servers en backup
-              ...stunServers.map(server => ({
-                urls: server.urls
               }))
             ],
             iceTransportPolicy: 'all', // Essayer relay puis public puis private
@@ -128,15 +125,7 @@ export default function VideoConferenceApp() {
           };
           
           setIceConfig(config);
-          
-          const twilioCount = turnServers.filter(s => s.urls && s.urls.includes('twilio')).length;
-          console.log('✅ Configuration ICE complète chargée:', {
-            totalServers: config.iceServers.length,
-            turnServers: turnServers.length,
-            stunServers: stunServers.length,
-            twilioServers: twilioCount,
-            hasTwilio: twilioCount > 0
-          });
+          console.log('✅ Configuration ICE complète chargée avec TURN');
           
           // Pour compatibilité avec le code existant
           setIceServers(data.iceServers);
@@ -577,17 +566,11 @@ export default function VideoConferenceApp() {
       console.log(`🔗 Création peer ${userId} (initiateur: ${isInitiator})`);
       
       // Utiliser la configuration ICE récupérée ou la configuration par défaut
-      // Attendre un peu si la configuration n'est pas encore chargée
-      if (!iceConfig) {
-        console.warn('⚠️ Configuration ICE non chargée, utilisation de la configuration par défaut');
-      }
-      
       const configuration = iceConfig || {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:stun3.l.google.com:19302' }
+          { urls: 'stun:stun2.l.google.com:19302' }
         ],
         iceCandidatePoolSize: 10,
         iceTransportPolicy: 'all',
@@ -595,14 +578,7 @@ export default function VideoConferenceApp() {
         rtcpMuxPolicy: 'require'
       };
       
-      console.log('⚙️ Configuration ICE utilisée:', {
-        hasTwilio: configuration.iceServers.some(s => s.urls && s.urls.includes('twilio')),
-        totalServers: configuration.iceServers.length,
-        servers: configuration.iceServers.map(s => ({
-          urls: s.urls,
-          hasCredentials: !!(s.username && s.credential)
-        }))
-      });
+      console.log('⚙️ Configuration ICE utilisée:', configuration.iceServers);
       
       const peer = new RTCPeerConnection(configuration);
       peersRef.current[userId] = peer;
@@ -846,13 +822,9 @@ export default function VideoConferenceApp() {
       const configuration = iceConfig || {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' }
+          { urls: 'stun:stun1.l.google.com:19302' }
         ],
-        iceCandidatePoolSize: 10,
-        iceTransportPolicy: 'all',
-        bundlePolicy: 'max-bundle',
-        rtcpMuxPolicy: 'require'
+        iceCandidatePoolSize: 10
       };
       
       const peer = new RTCPeerConnection(configuration);
@@ -2061,12 +2033,6 @@ export default function VideoConferenceApp() {
                         onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
                         placeholder="Écrivez un message..."
                         className="message-input"
-                        inputMode="text"
-                        autoComplete="off"
-                        autoCorrect="off"
-                        autoCapitalize="off"
-                        spellCheck="false"
-                        readOnly={false}
                       />
                       {/* Désactivation de l'envoi de fichiers - bouton caché */}
                       <input
