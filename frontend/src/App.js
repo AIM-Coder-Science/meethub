@@ -76,6 +76,11 @@ export default function VideoConferenceApp() {
   const ICE_RESTART_MAX_ATTEMPTS = 1; // Only restart ICE once per peer
   // ============================================================
 
+  // ============ CONNECTION LOSS TRACKING (Production UI) ============
+  const connectionLossRef = useRef({}); // { peerId: true/false }
+  const [connectionLossState, setConnectionLossState] = useState({}); // Trigger UI updates
+  // ==================================================================
+
   const emojis = ['❤️', '👍', '👎', '😂', '😮', '😢', '🎉'];
 
   useEffect(() => {
@@ -138,18 +143,29 @@ export default function VideoConferenceApp() {
         console.log('📡 Données TURN reçues:', data);
         
         if (data.iceServers && Array.isArray(data.iceServers)) {
+          // ============ OPTIMIZE ICE SERVERS (Production-Grade) ============
+          // Filter Twilio servers: keep only essential ones to speed up ICE checking
+          // 16 servers = too slow. Target: 3-5 servers max.
+          
+          const optimizedTurnServers = data.iceServers
+            .filter(server => {
+              // Keep Twilio global STUN
+              if (server.urls?.includes('stun:global.stun.twilio.com')) return true;
+              // Keep TURN servers with UDP transport (faster than TCP)
+              if (server.urls?.includes('turn:') && server.urls?.includes('transport=udp')) return true;
+              return false;
+            })
+            .slice(0, 3); // Max 3 TURN servers
+          
+          console.log(`[ICE SERVERS] Optimisation: ${data.iceServers.length} → ${optimizedTurnServers.length} serveurs`);
+          
           const config = {
             iceServers: [
+              // Prioritize Google/Voipbuster STUN (fast + reliable)
               { urls: 'stun:stun.l.google.com:19302' },
               { urls: 'stun:stun1.l.google.com:19302' },
-              { urls: 'stun:stun2.l.google.com:19302' },
-              { urls: 'stun:stun.voipbuster.com:3478' },
-              ...data.iceServers.map(server => ({
-                urls: server.urls,
-                username: server.username || '',
-                credential: server.credential || '',
-                credentialType: server.credentialType || 'password'
-              }))
+              // Add optimized Twilio TURN servers
+              ...optimizedTurnServers
             ],
             iceTransportPolicy: 'all',
             iceCandidatePoolSize: 10,
@@ -158,9 +174,9 @@ export default function VideoConferenceApp() {
           };
           
           setIceConfig(config);
-          console.log('✅ Configuration ICE complète chargée avec TURN');
+          console.log('✅ ICE Config optimisée: STUN x2 + TURN x' + optimizedTurnServers.length);
           
-          setIceServers(data.iceServers);
+          setIceServers(optimizedTurnServers);
         } else {
           console.warn('⚠️ Format de données TURN invalide, utilisation des STUN par défaut');
           setIceConfig(getDefaultIceConfig());
@@ -266,6 +282,14 @@ export default function VideoConferenceApp() {
     delete iceRestartInProgressRef.current[peerId];
     delete iceRestartTimestampRef.current[peerId];
     delete iceRestartCountRef.current[peerId];
+    
+    // Cleanup connection loss tracking
+    delete connectionLossRef.current[peerId];
+    setConnectionLossState(prev => {
+      const updated = { ...prev };
+      delete updated[peerId];
+      return updated;
+    });
     
     setRemoteStreams(prev => {
       const updated = { ...prev };
@@ -457,11 +481,11 @@ export default function VideoConferenceApp() {
 
     // ============ PERFECT NEGOTIATION PATTERN ============
     socketRef.current.on('offer', async ({ from, offer }) => {
-      console.log('📨 OFFRE reçue de:', from);
+      console.log('[PERFNEG] 📨 Offre reçue de:', from);
       
       let peer = peersRef.current[from];
       if (!peer) {
-        console.log(`🔗 Création peer ${from} pour traiter l'offre`);
+        console.log(`[PERFNEG] 🔗 Création peer ${from} pour traiter l'offre`);
         peer = await createPeerConnection(from, false);
         if (!peer) return;
       }
@@ -477,20 +501,20 @@ export default function VideoConferenceApp() {
         ignoreOfferRef.current[from] = !isPolite && offerCollision;
         
         if (ignoreOfferRef.current[from]) {
-          console.log(`⚠️ Offre IGNORÉE (collision détectée, nous sommes impolite): ${from}`);
+          console.log(`[PERFNEG] ⚠️ Offre IGNORÉE (collision détectée, nous sommes impolite): ${from}`);
           console.log(`   signalingState="${peer.signalingState}", makingOffer=${makingOfferRef.current[from]}`);
           console.log(`   Nous attendrons notre answer à la place de cette offre`);
           return;
         }
         
         if (offerCollision) {
-          console.log(`✅ Collision détectée mais nous sommes POLITE - acceptons l'offre distante`);
+          console.log(`[PERFNEG] ✅ Collision détectée mais nous sommes POLITE - acceptons l'offre distante`);
         }
         
         remoteDescriptionsSetRef.current[from] = false;
         
         await peer.setRemoteDescription(new RTCSessionDescription(offer));
-        console.log(`✅ remoteDescription défini pour ${from}`);
+        console.log(`[PERFNEG] ✅ remoteDescription défini pour ${from}`);
         remoteDescriptionsSetRef.current[from] = true;
         
         await flushPendingIceCandidates(from, peer);
@@ -499,7 +523,7 @@ export default function VideoConferenceApp() {
         await peer.setLocalDescription(answer);
         
         socketRef.current.emit('answer', { to: from, answer });
-        console.log(`📤 ANSWER envoyé à ${from}`);
+        console.log(`[PERFNEG] 📤 Answer envoyé à ${from}`);
         
       } catch (error) {
         console.error(`❌ Erreur traitement offer de ${from}:`, error);
@@ -508,11 +532,11 @@ export default function VideoConferenceApp() {
     });
 
     socketRef.current.on('answer', async ({ from, answer }) => {
-      console.log('📨 RÉPONSE reçue de:', from);
+      console.log('[PERFNEG] 📨 Réponse reçue de:', from);
 
       const peer = peersRef.current[from];
       if (!peer) {
-        console.warn(`⚠️ Aucun peer trouvé pour ${from}, réponse ignorée`);
+        console.warn(`[PERFNEG] ⚠️ Aucun peer trouvé pour ${from}, réponse ignorée`);
         return;
       }
 
@@ -522,9 +546,9 @@ export default function VideoConferenceApp() {
       const signalingState = peer.signalingState;
       
       if (signalingState !== 'have-local-offer') {
-        console.warn(`⚠️ Answer IGNORÉ - signalingState: "${signalingState}" (attendu: "have-local-offer")`);
-        console.warn(`   Explication: Un answer ne peut être accepté que si nous avons envoyé une offer`);
-        console.warn(`   État indique potentiellement: double-answer, collision, ou offre en attente`);
+        console.warn(`[PERFNEG] ⚠️ Answer IGNORÉ - signalingState: "${signalingState}" (attendu: "have-local-offer")`);
+        console.warn(`[PERFNEG]    Explication: Un answer ne peut être accepté que si nous avons envoyé une offer`);
+        console.warn(`[PERFNEG]    État indique potentiellement: double-answer, collision, ou offre en attente`);
         return;
       }
       // ==============================================================
@@ -837,7 +861,7 @@ export default function VideoConferenceApp() {
               peer.signalingState === 'stable' &&
               !makingOfferRef.current[userId]) {
             
-            console.log(`🔄 Déclenchement ICE restart pour ${userId} (tentative ${restartCount + 1}/${ICE_RESTART_MAX_ATTEMPTS})`);
+            console.log(`[ICE RESTART] 🔄 Déclenchement pour ${userId} (tentative ${restartCount + 1}/${ICE_RESTART_MAX_ATTEMPTS})`);
             
             iceRestartInProgressRef.current[userId] = true;
             iceRestartCountRef.current[userId] = restartCount + 1;
@@ -846,7 +870,7 @@ export default function VideoConferenceApp() {
             setTimeout(async () => {
               try {
                 if (!peer || peer.iceConnectionState !== 'disconnected') {
-                  console.log(`⚠️ ICE restart annulé pour ${userId}: state changed to ${peer?.iceConnectionState || 'peer closed'}`);
+                  console.log(`[ICE RESTART] ⚠️ Annulé pour ${userId}: state changed to ${peer?.iceConnectionState || 'peer closed'}`);
                   iceRestartInProgressRef.current[userId] = false;
                   return;
                 }
@@ -864,12 +888,12 @@ export default function VideoConferenceApp() {
                     offer: peer.localDescription
                   });
                   
-                  console.log(`✅ ICE restart offer envoyé à ${userId} (timestamp: ${new Date().toISOString()})`);
+                  console.log(`[ICE RESTART] ✅ Offer envoyé à ${userId} (timestamp: ${new Date().toISOString()})`);
                 } else {
-                  console.log(`⚠️ ICE restart: non-initiator ${userId} attente d'une nouvelle offer`);
+                  console.log(`[ICE RESTART] ⚠️ Non-initiator ${userId} attente d'une nouvelle offer`);
                 }
               } catch (error) {
-                console.error(`❌ Erreur ICE restart pour ${userId}:`, error.message);
+                console.error(`[ICE RESTART] ❌ Erreur pour ${userId}:`, error.message);
               } finally {
                 iceRestartInProgressRef.current[userId] = false;
                 isNegotiatingRef.current[userId] = false;
@@ -877,15 +901,19 @@ export default function VideoConferenceApp() {
               }
             }, 500); // Short delay before restart
           } else if (isInProgress) {
-            console.log(`ℹ️ ICE restart déjà en cours pour ${userId}`);
+            console.log(`[ICE RESTART] ℹ️ Déjà en cours pour ${userId}`);
           } else if (restartCount >= ICE_RESTART_MAX_ATTEMPTS) {
-            console.warn(`⚠️ ICE restart max attempts atteint pour ${userId}. Pas de restart supplémentaire.`);
+            console.warn(`[ICE RESTART] ⚠️ Max attempts atteint pour ${userId}. Pas de restart supplémentaire.`);
           } else if (timeSinceLastRestart <= ICE_RESTART_COOLDOWN) {
-            console.warn(`⚠️ ICE restart en cooldown pour ${userId} (${Math.round((ICE_RESTART_COOLDOWN - timeSinceLastRestart) / 1000)}s restantes)`);
+            console.warn(`[ICE RESTART] ⚠️ En cooldown pour ${userId} (${Math.round((ICE_RESTART_COOLDOWN - timeSinceLastRestart) / 1000)}s restantes)`);
           }
         } else if (state === 'failed') {
           // ===== ICE FAILED: Do NOT restart, show error UI =====
           console.error(`❌ ICE failed définitivement pour ${userId}`);
+          
+          // Mark connection as lost for UI
+          connectionLossRef.current[userId] = true;
+          setConnectionLossState(prev => ({ ...prev, [userId]: true }));
           
           setNotification({
             message: `Connexion perdue avec ${participants.find(p => p.id === userId)?.name || 'un participant'}. Essayez de relancer la vidéo.`,
@@ -900,6 +928,9 @@ export default function VideoConferenceApp() {
           // Reset ICE restart tracking on successful connection
           iceRestartCountRef.current[userId] = 0;
           iceRestartTimestampRef.current[userId] = 0;
+          // Clear connection loss marker
+          connectionLossRef.current[userId] = false;
+          setConnectionLossState(prev => ({ ...prev, [userId]: false }));
         } else if (state === 'new' || state === 'checking') {
           console.log(`🔍 ICE checking pour ${userId}...`);
         }
@@ -2214,7 +2245,7 @@ export default function VideoConferenceApp() {
               {activeTab === 'participants' && (
                 <div className="participants-list">
                   {participants.map((participant) => (
-                    <div key={participant.id} className="participant-item">
+                    <div key={participant.id} className={`participant-item ${connectionLossState[participant.id] ? 'connection-lost' : ''}`}>
                       <div className="participant-avatar">
                         {participant.name.charAt(0).toUpperCase()}
                       </div>
@@ -2222,6 +2253,7 @@ export default function VideoConferenceApp() {
                         <span className="participant-name">{participant.name}</span>
                         {participant.isLocal && <span className="you-badge">Vous</span>}
                         {participant.isCreator && <span className="creator-badge">👑 Créateur</span>}
+                        {connectionLossState[participant.id] && <span className="connection-lost-badge">⚠️ Connexion perdue</span>}
                       </div>
                       {isCreator && !participant.isLocal && (
                         <div className="participant-controls">

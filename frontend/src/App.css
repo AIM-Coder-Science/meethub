@@ -1520,6 +1520,30 @@ html, body {
   flex-shrink: 0;
 }
 
+/* ===== PRODUCTION: Connection Loss Indicator ===== */
+.connection-lost-badge {
+  padding: 0.2rem 0.5rem;
+  background: rgba(255, 0, 85, 0.15);
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  font-size: 0.7rem;
+  color: var(--danger);
+  font-weight: 500;
+  flex-shrink: 0;
+  animation: pulse-red 2s infinite;
+}
+
+@keyframes pulse-red {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.participant-item.connection-lost {
+  opacity: 0.7;
+  border-left: 2px solid var(--danger);
+  padding-left: calc(0.5rem - 2px);
+}
+
 .participant-controls {
   display: flex;
   gap: 0.4rem;
