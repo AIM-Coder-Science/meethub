@@ -1,4 +1,10 @@
+
 // server.js - Serveur de signalisation WebRTC avec Socket.io
+
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
+
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -9,6 +15,17 @@ const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
+
+// --- CONFIGURATION TWILIO V5 ---
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const twilioAvailable = TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN;
+
+if (twilioAvailable) {
+  console.log('✅ Twilio credentials détectés');
+} else {
+  console.warn('⚠️  Twilio credentials manquants - utilisation des serveurs gratuits');
+}
 
 // Configuration du stockage des fichiers
 const storage = multer.diskStorage({
@@ -118,80 +135,102 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
   }
 });
 
-// Route pour générer les credentials TURN
+// --- ROUTE CREDENTIALS TURN CORRIGÉE POUR TWILIO V5 ---
 app.get('/api/turn-credentials', (req, res) => {
   console.log('🔐 Demande de credentials TURN reçue');
   
-  const credentials = {
-    iceServers: [
-      // STUN Google (fiable et gratuit)
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun3.l.google.com:19302' },
-      { urls: 'stun:stun4.l.google.com:19302' },
-      
-      // STUN publics alternatifs
-      { urls: 'stun:stun.voipbuster.com:3478' },
-      { urls: 'stun:stun.voipstunt.com:3478' },
-      
-      // TURN Twilio (ajoutez vos credentials ici)
-      { 
-        urls: 'turn:global.turn.twilio.com:3478?transport=udp',
-        username: process.env.TWILIO_ACCOUNT_SID || 'TWILIO_ACCOUNT_SID',
-        credential: process.env.TWILIO_AUTH_TOKEN || 'TWILIO_AUTH_TOKEN'
-      },
-      { 
-        urls: 'turn:global.turn.twilio.com:3478?transport=tcp',
-        username: process.env.TWILIO_ACCOUNT_SID || 'TWILIO_ACCOUNT_SID',
-        credential: process.env.TWILIO_AUTH_TOKEN || 'TWILIO_AUTH_TOKEN'
-      },
-      { 
-        urls: 'turn:global.turn.twilio.com:443?transport=tcp',
-        username: process.env.TWILIO_ACCOUNT_SID || 'TWILIO_ACCOUNT_SID',
-        credential: process.env.TWILIO_AUTH_TOKEN || 'TWILIO_AUTH_TOKEN'
-      },
-      
-      // TURN openrelay (gratuit)
-      { 
-        urls: 'turn:openrelay.metered.ca:80',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      },
-      { 
-        urls: 'turn:openrelay.metered.ca:443',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      },
-      { 
-        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      },
-      
-      // TURN metered.ca
-      { 
-        urls: 'turn:global.relay.metered.ca:80',
-        username: 'd4682bb48701b55009b58f1c',
-        credential: 'Ujx2pj32ryDG3G1R'
-      },
-      { 
-        urls: 'turn:global.relay.metered.ca:443',
-        username: 'd4682bb48701b55009b58f1c',
-        credential: 'Ujx2pj32ryDG3G1R'
-      },
-      { 
-        urls: 'turn:global.relay.metered.ca:443?transport=tcp',
-        username: 'd4682bb48701b55009b58f1c',
-        credential: 'Ujx2pj32ryDG3G1R'
-      }
-    ]
-  };
+  // Configuration de base - STUN servers (toujours fonctionnels)
+  const baseIceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.voipbuster.com:3478' },
+    { urls: 'stun:stun.voipstunt.com:3478' }
+  ];
 
-  console.log('✅ Configuration TURN générée');
-  console.log(`   Nombre total de serveurs ICE: ${credentials.iceServers.length}`);
+  // TURN gratuits (backup)
+  const freeTurnServers = [
+    { 
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    { 
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    { 
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    { 
+      urls: 'turn:global.relay.metered.ca:80',
+      username: 'd4682bb48701b55009b58f1c',
+      credential: 'Ujx2pj32ryDG3G1R'
+    },
+    { 
+      urls: 'turn:global.relay.metered.ca:443',
+      username: 'd4682bb48701b55009b58f1c',
+      credential: 'Ujx2pj32ryDG3G1R'
+    },
+    { 
+      urls: 'turn:global.relay.metered.ca:443?transport=tcp',
+      username: 'd4682bb48701b55009b58f1c',
+      credential: 'Ujx2pj32ryDG3G1R'
+    }
+  ];
+
+  // Si Twilio est disponible, utiliser son format V5
+  if (twilioAvailable) {
+    console.log('🔄 Génération des credentials Twilio v5.11.2');
+    
+    try {
+      // FORMAT TWILIO V5:
+      // username = timestamp:accountSID
+      // credential = authToken
+      
+      const timestamp = Math.floor(Date.now() / 1000) + 86400; // Valide 24h
+      
+      const twilioIceServers = [
+        { 
+          urls: 'turn:global.turn.twilio.com:3478?transport=udp',
+          username: `${timestamp}:${TWILIO_ACCOUNT_SID}`,
+          credential: TWILIO_AUTH_TOKEN
+        },
+        { 
+          urls: 'turn:global.turn.twilio.com:3478?transport=tcp',
+          username: `${timestamp}:${TWILIO_ACCOUNT_SID}`,
+          credential: TWILIO_AUTH_TOKEN
+        },
+        { 
+          urls: 'turns:global.turn.twilio.com:443?transport=tcp',
+          username: `${timestamp}:${TWILIO_ACCOUNT_SID}`,
+          credential: TWILIO_AUTH_TOKEN
+        }
+      ];
+
+      const iceServers = [...baseIceServers, ...twilioIceServers, ...freeTurnServers];
+      
+      console.log(`✅ Configuration TURN générée: ${iceServers.length} serveurs (dont Twilio)`);
+      console.log(`   Twilio Account SID: ${TWILIO_ACCOUNT_SID.substring(0, 8)}...`);
+      
+      return res.json({ iceServers });
+      
+    } catch (error) {
+      console.error('❌ Erreur configuration Twilio:', error.message);
+      console.log('⚠️  Fallback sur serveurs gratuits');
+    }
+  }
+
+  // Sans Twilio, utiliser seulement les serveurs gratuits
+  const iceServers = [...baseIceServers, ...freeTurnServers];
+  console.log(`✅ Configuration TURN générée: ${iceServers.length} serveurs (gratuits seulement)`);
   
-  res.json(credentials);
+  res.json({ iceServers });
 });
 
 // Gestion des connexions Socket.io
@@ -750,7 +789,7 @@ server.listen(PORT, () => {
   console.log(`╚═══════════════════════════════════════╝`);
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌐 WebSocket: Prêt`);
-  console.log(`🔐 TURN: Services configurés`);
+  console.log(`🔐 TURN: ${twilioAvailable ? 'Twilio v5.11.2 configuré' : 'Serveurs gratuits'}`);
   console.log(`⏰ Heure: ${new Date().toLocaleString('fr-FR')}`);
   console.log(`\n✅ En attente de connexions...\n`);
 });
