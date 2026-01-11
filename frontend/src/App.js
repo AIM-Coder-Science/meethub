@@ -448,15 +448,24 @@ export default function VideoConferenceApp() {
       }
       
       try {
-        // Perfect negotiation: vérifier collision
+        // PERFECT NEGOTIATION: Collision detection and handling
+        // Collision occurs when: signalingState !== 'stable' OR we're making an offer
+        // Strategy: Impolite peer (initiator) ignores offer, Polite peer (receiver) accepts it
+        
         const isPolite = isPolitePeerRef.current[from] || false;
         const offerCollision = peer.signalingState !== 'stable' || makingOfferRef.current[from];
         
         ignoreOfferRef.current[from] = !isPolite && offerCollision;
         
         if (ignoreOfferRef.current[from]) {
-          console.log(`⚠️ Offre ignorée (collision, impolite peer): ${from}`);
+          console.log(`⚠️ Offre IGNORÉE (collision détectée, nous sommes impolite): ${from}`);
+          console.log(`   signalingState="${peer.signalingState}", makingOffer=${makingOfferRef.current[from]}`);
+          console.log(`   Nous attendrons notre answer à la place de cette offre`);
           return;
+        }
+        
+        if (offerCollision) {
+          console.log(`✅ Collision détectée mais nous sommes POLITE - acceptons l'offre distante`);
         }
         
         remoteDescriptionsSetRef.current[from] = false;
@@ -475,7 +484,7 @@ export default function VideoConferenceApp() {
         
       } catch (error) {
         console.error(`❌ Erreur traitement offer de ${from}:`, error);
-        cleanupPeerData(from);
+        // Note: We don't recreate peer. ICE restart will handle recovery if needed.
       }
     });
 
@@ -488,28 +497,31 @@ export default function VideoConferenceApp() {
         return;
       }
 
-      // ============ PERFECT NEGOTIATION: CRITICAL FIX ============
-      // NEVER call setRemoteDescription(answer) unless signalingState === "have-local-offer"
-      // This prevents "InvalidStateError: Called in wrong state: stable"
-      if (peer.signalingState !== 'have-local-offer') {
-        console.log(`⚠️ Answer IGNORÉ - signalingState: ${peer.signalingState} (attendu: have-local-offer)`);
-        console.log(`   Raison: Recevoir un answer en état "${peer.signalingState}" indique un double-answer ou une collision`);
+      // ============ PERFECT NEGOTIATION: ANSWER ACCEPTANCE ============
+      // RULE: Only accept answer when signalingState === 'have-local-offer'
+      // This prevents InvalidStateError, double-answer, and collision issues
+      const signalingState = peer.signalingState;
+      
+      if (signalingState !== 'have-local-offer') {
+        console.warn(`⚠️ Answer IGNORÉ - signalingState: "${signalingState}" (attendu: "have-local-offer")`);
+        console.warn(`   Explication: Un answer ne peut être accepté que si nous avons envoyé une offer`);
+        console.warn(`   État indique potentiellement: double-answer, collision, ou offre en attente`);
         return;
       }
-      // ===========================================================
+      // ==============================================================
 
       try {
         remoteDescriptionsSetRef.current[from] = false;
 
         await peer.setRemoteDescription(new RTCSessionDescription(answer));
-        console.log(`✅ remoteDescription défini pour ${from} (answer)`);
+        console.log(`✅ Answer accepté - remoteDescription défini pour ${from}`);
         remoteDescriptionsSetRef.current[from] = true;
 
         await flushPendingIceCandidates(from, peer);
 
       } catch (error) {
         console.error(`❌ Erreur traitement answer de ${from}:`, error);
-        cleanupPeerData(from);
+        // Note: We don't recreate peer. ICE restart will handle recovery if needed.
       }
     });
     // ====================================================
@@ -818,11 +830,11 @@ export default function VideoConferenceApp() {
           } else if (attempts > 3) {
             console.error(`❌ Échec ICE définitif après ${attempts} tentatives pour ${userId}`);
             setNotification({
-              message: `Impossible de se connecter à ${participants.find(p => p.id === userId)?.name || 'un participant'}`,
-              type: 'error',
+              message: `Reconnexion en cours avec ${participants.find(p => p.id === userId)?.name || 'un participant'}...`,
+              type: 'info',
               timestamp: Date.now()
             });
-            cleanupPeerData(userId);
+            // CRITICAL FIX: Do NOT recreate peer. Let connection stabilize or timeout naturally.
           }
         } else if (state === 'connected' || state === 'completed') {
           console.log(`✅ Connexion ICE établie avec ${userId}`);
@@ -832,23 +844,26 @@ export default function VideoConferenceApp() {
             return updated;
           });
         } else if (state === 'disconnected') {
-          console.warn(`⚠️ ICE disconnected pour ${userId}, attente...`);
+          // CRITICAL FIX: 'disconnected' is a TRANSIENT state, NOT a failure
+          // DO NOT recreate peer. WebRTC will auto-reconnect. Only log and wait.
+          console.warn(`⚠️ ICE disconnected (transient) pour ${userId}. Reconnexion automatique en cours...`);
         }
       };
 
+      // CRITICAL FIX: DO NOT recreate peer on connectionState='failed'
+      // Use ICE restart instead (handled in oniceconnectionstatechange)
       peer.onconnectionstatechange = () => {
         const state = peer.connectionState;
         console.log(`🔌 État connexion ${userId}:`, state);
         
         if (state === 'failed') {
-          console.error(`❌ Connexion failed pour ${userId}`);
-          setTimeout(() => {
-            if (peer && peer.connectionState === 'failed') {
-              console.log(`🔄 Recréation connexion pour ${userId}`);
-              cleanupPeerData(userId);
-              createPeerConnection(userId, isInitiator);
-            }
-          }, 2000);
+          // Connection failed - ICE restart is triggered in oniceconnectionstatechange
+          console.error(`❌ Connexion failed pour ${userId} - ICE restart sera tenté...`);
+          // NOTE: Peer is NOT recreated. ICE restart is the recovery mechanism.
+        } else if (state === 'disconnected') {
+          console.warn(`⚠️ Connexion disconnected (transient) pour ${userId}. WebRTC tente une reconnexion...`);
+        } else if (state === 'connected') {
+          console.log(`✅ Connexion établie avec ${userId}`);
         }
       };
 

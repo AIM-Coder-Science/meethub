@@ -1166,9 +1166,15 @@ html, body {
   position: sticky;
   bottom: 0;
   z-index: 10;
-  /* S'assurer que le conteneur n'empêche pas le clavier */
+  /* Prevent layout shifts when keyboard appears */
+  flex-shrink: 0;
+  /* Ensure keyboard doesn't cause viewport jumping */
   -webkit-transform: translateZ(0);
   transform: translateZ(0);
+  will-change: transform;
+  /* Mobile keyboard support */
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .file-preview {
@@ -1227,6 +1233,12 @@ html, body {
   pointer-events: auto;
   -webkit-user-modify: read-write-plaintext-only;
   user-modify: read-write-plaintext-only;
+  /* FIX: Ensure text is visible during typing on mobile */
+  resize: none;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.4;
 }
 
 .message-input:focus {
@@ -1922,15 +1934,17 @@ html, body {
     z-index: 10;
     background: rgba(20, 24, 36, 0.95);
     backdrop-filter: blur(8px);
-    /* S'assurer que le conteneur n'empêche pas le clavier */
+    /* Prevent layout shifts when keyboard appears */
+    flex-shrink: 0;
     -webkit-transform: translateZ(0);
     transform: translateZ(0);
+    will-change: transform;
   }
   
   .message-input {
     font-size: 0.85rem;
     padding: 0.5rem 0.75rem;
-    min-height: 44px; /* Taille minimale recommandée pour mobile (44x44px) */
+    min-height: 44px;
     -webkit-appearance: none;
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
@@ -1939,6 +1953,14 @@ html, body {
     user-select: text;
     -webkit-user-modify: read-write-plaintext-only;
     user-modify: read-write-plaintext-only;
+    /* FIX: Ensure text is visible during typing */
+    resize: none;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    line-height: 1.4;
+    /* Prevent flickering */
+    will-change: background-color;
   }
   
   .message-input:focus {
