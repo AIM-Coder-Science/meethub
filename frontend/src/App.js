@@ -469,7 +469,9 @@ export default function VideoConferenceApp() {
     
     for (const candidate of queue) {
       try {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        if (pc.remoteDescription) {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        }
       } catch (err) {
         console.warn(`⚠️ Erreur évacuation ICE candidate pour ${peerId}:`, err);
       }
@@ -789,8 +791,8 @@ export default function VideoConferenceApp() {
         isLocal: false 
       }]);
       
-      // Create peer connection (receiver = impolite)
-      createPeerConnection(user.id, false);
+      // Create peer connection (we are polite to new users since they just joined)
+      createPeerConnection(user.id, true);
     });
 
     socketRef.current.on('user-left', (user) => {
