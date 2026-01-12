@@ -8,7 +8,7 @@
 // ============================================================
 // 1. IMPORT AT TOP OF App.js
 // ============================================================
-
+/*
 import {
   createPeerConnection,
   handleOffer,
@@ -228,7 +228,7 @@ const leaveRoom = () => {
   setIsInRoom(false);
   setParticipants([]);
   setRemoteStreams({});
-};
+};*/
 
 // ============================================================
 // 8. EXPECTED PROPS/STATE PASSED TO WebRTCCore

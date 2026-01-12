@@ -25,7 +25,7 @@
 // ============================================================
 // STATE REFS (add to component state)
 // ============================================================
-
+/*
 const peersRef = useRef({}); // { peerId: RTCPeerConnection }
 const pendingIceCandidatesRef = useRef({}); // { peerId: [RTCIceCandidate, ...] }
 const remoteDescriptionSetRef = useRef({}); // { peerId: boolean }
@@ -515,3 +515,4 @@ export {
   stopScreenShare,
   cleanupPeerData
 };
+*/
