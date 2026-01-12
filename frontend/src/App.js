@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Video, VideoOff, Mic, MicOff, Phone, PhoneOff, MessageSquare, Users, Monitor, Copy, Check, MonitorOff, Send, Image as ImageIcon, Paperclip, MoreVertical, Edit2, Trash2, Pin, Heart, ThumbsUp, ThumbsDown, Smile, X, Menu } from 'lucide-react';
+import { Video, VideoOff, Mic, MicOff, Phone, PhoneOff, MessageSquare, Users, Monitor, Copy, Check, MonitorOff, Send, Image as ImageIcon, Paperclip, MoreVertical, Edit2, Trash2, Pin, Heart, ThumbsUp, ThumbsDown, Smile, X, Menu, AlertCircle, WifiOff } from 'lucide-react';
 import io from 'socket.io-client';
 import './App.css';
 
@@ -18,11 +18,9 @@ export default function VideoConferenceApp() {
   const [messageInput, setMessageInput] = useState('');
   const [participants, setParticipants] = useState([]);
   const [remoteStreams, setRemoteStreams] = useState({});
-  const [screenStreams, setScreenStreams] = useState({});
   const [copied, setCopied] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('Déconnecté');
   const [hasJoinedRoom, setHasJoinedRoom] = useState(false);
-  const [iceServers, setIceServers] = useState([]);
   const [iceConfig, setIceConfig] = useState(null);
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editingText, setEditingText] = useState('');
@@ -38,1156 +36,629 @@ export default function VideoConferenceApp() {
   const [mediaState, setMediaState] = useState(null);
   const [showMediaPlayer, setShowMediaPlayer] = useState(false);
   const [isFetchingTurn, setIsFetchingTurn] = useState(false);
+  const [connectionProblems, setConnectionProblems] = useState({}); // { peerId: true/false }
   const mediaPlayerRef = useRef(null);
-  const mediaSyncThreshold = 2000;
-  const isReceivingRemoteUpdate = useRef(false);
-  const [iceConnectionAttempts, setIceConnectionAttempts] = useState({});
-  
+
   const socketRef = useRef(null);
   const localVideoRef = useRef(null);
   const localStreamRef = useRef(null);
-  const screenStreamRef = useRef(null);
-  const peersRef = useRef({});
-  const screenPeersRef = useRef({});
-  const remoteVideosRef = useRef({});
-  const screenVideosRef = useRef({});
   const chatMessagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const messageMenuRefs = useRef({});
   const messageInputRef = useRef(null);
 
-  // QUEUE ICE CANDIDATES
-  const pendingIceCandidatesRef = useRef({});
-  const remoteDescriptionsSetRef = useRef({});
-
-  // ============ NOUVEAUX REFS POUR PERFECT NEGOTIATION ============
-  const isNegotiatingRef = useRef({}); // { peerId: true/false }
-  const makingOfferRef = useRef({}); // { peerId: true/false }
-  const ignoreOfferRef = useRef({}); // { peerId: true/false }
-  const isPolitePeerRef = useRef({}); // { peerId: true/false }
-  // ================================================================
-
-  // ============ ICE RESTART STRATEGY (CRITICAL FIX) ============
-  // Track ICE restart state to prevent infinite loops and multiple restarts
-  const iceRestartInProgressRef = useRef({}); // { peerId: true/false }
-  const iceRestartTimestampRef = useRef({}); // { peerId: timestamp }
-  const iceRestartCountRef = useRef({}); // { peerId: count } (max 1)
-  const ICE_RESTART_COOLDOWN = 5000; // 5 second cooldown
-  const ICE_RESTART_MAX_ATTEMPTS = 1; // Only restart ICE once per peer
-  // ============================================================
-
-  // ============ CONNECTION LOSS TRACKING (Production UI) ============
-  const connectionLossRef = useRef({}); // { peerId: true/false }
-  const [connectionLossState, setConnectionLossState] = useState({}); // Trigger UI updates
-  // ==================================================================
-
+  // ============ STRUCTURE DE DONNÉES POUR PERFECT NEGOTIATION ============
+  const peerConnectionsRef = useRef({}); // { peerId: RTCPeerConnection }
+  
+  // SENDER RÉFÉRENCE - STOCKAGE DES SENDERS
+  const videoSendersRef = useRef({}); // { peerId: RTCRtpSender }
+  const audioSendersRef = useRef({}); // { peerId: RTCRtpSender }
+  
+  // Perfect Negotiation tracking (MDN standard)
+  const negotiationStateRef = useRef({}); // {
+  //   [peerId]: {
+  //     makingOffer: boolean,
+  //     ignoreOffer: boolean,
+  //     isPolite: boolean,
+  //     isSettingRemoteAnswerPending: boolean
+  //   }
+  // }
+  
+  // Original camera track storage for screen sharing
+  const originalVideoTracksRef = useRef({}); // { peerId: MediaStreamTrack }
+  
+  // ICE candidates queue
+  const iceCandidatesQueueRef = useRef({}); // { peerId: RTCIceCandidate[] }
+  
+  // Screen sharing state
+  const screenStreamRef = useRef(null);
+  
+  // ICE restart attempts tracking
+  const iceRestartAttemptsRef = useRef({}); // { peerId: number }
+  
   const emojis = ['❤️', '👍', '👎', '😂', '😮', '😢', '🎉'];
 
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (showMessageMenu && !messageMenuRefs.current[showMessageMenu]?.contains(event.target)) {
-        setShowMessageMenu(null);
-      }
-      if (showEmojiPicker && !event.target.closest('.emoji-picker') && !event.target.closest('.add-reaction-btn')) {
-        setShowEmojiPicker(null);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showMessageMenu, showEmojiPicker]);
-
-  const scrollToBottom = () => {
-    chatMessagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [chatMessages]);
-
-  useEffect(() => {
-    if (showChat && activeTab === 'chat' && messageInputRef.current) {
-      const timer = setTimeout(() => {
-        messageInputRef.current?.focus();
-        if (window.innerWidth <= 900) {
-          setTimeout(() => {
-            messageInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          }, 300);
-        }
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [showChat, activeTab]);
-
-  useEffect(() => {
-    const fetchTurnCredentials = async () => {
-      if (isFetchingTurn) return;
-      
-      setIsFetchingTurn(true);
-      try {
-        console.log('🔄 Récupération des credentials TURN...');
-        
-        const response = await fetch(`${SOCKET_SERVER_URL}/api/turn-credentials`, {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          mode: 'cors'
-        });
-        
-        if (!response.ok) {
-          throw new Error(`Serveur indisponible: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        console.log('📡 Données TURN reçues:', data);
-        
-        if (data.iceServers && Array.isArray(data.iceServers)) {
-          // ============ OPTIMIZE ICE SERVERS (Production-Grade) ============
-          // Filter Twilio servers: keep only essential ones to speed up ICE checking
-          // 16 servers = too slow. Target: 3-5 servers max.
-          
-          const optimizedTurnServers = data.iceServers
-            .filter(server => {
-              // Keep Twilio global STUN
-              if (server.urls?.includes('stun:global.stun.twilio.com')) return true;
-              // Keep TURN servers with UDP transport (faster than TCP)
-              if (server.urls?.includes('turn:') && server.urls?.includes('transport=udp')) return true;
-              return false;
-            })
-            .slice(0, 3); // Max 3 TURN servers
-          
-          console.log(`[ICE SERVERS] Optimisation: ${data.iceServers.length} → ${optimizedTurnServers.length} serveurs`);
-          
-          const config = {
-            iceServers: [
-              // Prioritize Google/Voipbuster STUN (fast + reliable)
-              { urls: 'stun:stun.l.google.com:19302' },
-              { urls: 'stun:stun1.l.google.com:19302' },
-              // Add optimized Twilio TURN servers
-              ...optimizedTurnServers
-            ],
-            iceTransportPolicy: 'all',
-            iceCandidatePoolSize: 10,
-            bundlePolicy: 'max-bundle',
-            rtcpMuxPolicy: 'require'
-          };
-          
-          setIceConfig(config);
-          console.log('✅ ICE Config optimisée: STUN x2 + TURN x' + optimizedTurnServers.length);
-          
-          setIceServers(optimizedTurnServers);
-        } else {
-          console.warn('⚠️ Format de données TURN invalide, utilisation des STUN par défaut');
-          setIceConfig(getDefaultIceConfig());
-        }
-      } catch (error) {
-        console.error('❌ Erreur récupération TURN credentials:', error);
-        setIceConfig(getDefaultIceConfig());
-      } finally {
-        setIsFetchingTurn(false);
-      }
-    };
-    
-    fetchTurnCredentials();
-    
-    function getDefaultIceConfig() {
+  // ============ CONFIGURATION WEBRTC REQUISE ============
+  const getRTCConfiguration = () => {
+    if (iceConfig && iceConfig.iceServers) {
       return {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:stun.voipbuster.com:3478' }
-        ],
-        iceTransportPolicy: 'all',
-        iceCandidatePoolSize: 10,
-        bundlePolicy: 'max-bundle',
-        rtcpMuxPolicy: 'require'
+        iceServers: iceConfig.iceServers,
+        bundlePolicy: "max-bundle", // FORCE bundle (audio+video+screen même port)
+        rtcpMuxPolicy: "require",
+        iceTransportPolicy: "all",
+        iceCandidatePoolSize: 10
       };
     }
-  }, []);
-
-  const generateRoomId = () => {
-    return Math.random().toString(36).substring(2, 10).toUpperCase();
+    
+    return {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ],
+      bundlePolicy: "max-bundle", // FORCE bundle (audio+video+screen même port)
+      rtcpMuxPolicy: "require",
+      iceTransportPolicy: "all",
+      iceCandidatePoolSize: 10
+    };
   };
 
-  useEffect(() => {
-    return () => {
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach(track => track.stop());
+  // ============ PERFECT NEGOTIATION: CREATE PEER CONNECTION ============
+  const createPeerConnection = (peerId, isPolite = false) => {
+    console.log(`🔗 Création PeerConnection pour ${peerId} (polite: ${isPolite})`);
+    
+    // Cleanup existing connection
+    if (peerConnectionsRef.current[peerId]) {
+      console.log(`🧹 Nettoyage ancienne connexion pour ${peerId}`);
+      peerConnectionsRef.current[peerId].close();
+      delete peerConnectionsRef.current[peerId];
+    }
+    
+    // Initialize negotiation state
+    negotiationStateRef.current[peerId] = {
+      makingOffer: false,
+      ignoreOffer: false,
+      isPolite: isPolite,
+      isSettingRemoteAnswerPending: false
+    };
+    
+    // Initialize ICE queue
+    iceCandidatesQueueRef.current[peerId] = [];
+    
+    // Initialize ICE restart attempts
+    iceRestartAttemptsRef.current[peerId] = 0;
+    
+    // Create new PeerConnection with required configuration
+    const pc = new RTCPeerConnection(getRTCConfiguration());
+    peerConnectionsRef.current[peerId] = pc;
+    
+    // ============ PERFECT NEGOTIATION: onnegotiationneeded AVEC VERROU STRICT ============
+    pc.onnegotiationneeded = async () => {
+      console.log(`🔄 Negotiation needed pour ${peerId} (state: ${pc.signalingState})`);
+      
+      const state = negotiationStateRef.current[peerId];
+      if (!state) return;
+      
+      // VERROU DE NÉGOCIATION STRICT
+      if (pc.signalingState !== "stable" || state.makingOffer) {
+        console.log(`🔒 Negotiation bloquée: signalingState=${pc.signalingState}, makingOffer=${state.makingOffer}`);
+        return;
       }
-      if (screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach(track => track.stop());
+      
+      try {
+        state.makingOffer = true;
+        
+        // Create offer
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true
+        });
+        
+        // Set local description
+        await pc.setLocalDescription(offer);
+        console.log(`✅ Offer créée pour ${peerId}`);
+        
+        // Send offer via signaling
+        socketRef.current.emit('offer', {
+          to: peerId,
+          offer: pc.localDescription
+        });
+        
+      } catch (err) {
+        console.error(`❌ Erreur création offer pour ${peerId}:`, err);
+      } finally {
+        state.makingOffer = false;
       }
-      if (socketRef.current) {
-        socketRef.current.disconnect();
+    };
+    
+    // ============ ICE CONNECTION HANDLING ============
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      console.log(`🔌 ICE state pour ${peerId}: ${state}`);
+      
+      // Gestion des problèmes de connexion
+      if (state === "disconnected" || state === "failed") {
+        console.warn(`⚠️ Problème ICE pour ${peerId}: ${state}`);
+        
+        // Marquer le participant comme ayant des problèmes de connexion
+        setConnectionProblems(prev => ({ ...prev, [peerId]: true }));
+        
+        if (state === "failed") {
+          // Premier restart automatique
+          if (iceRestartAttemptsRef.current[peerId] < 1) {
+            iceRestartAttemptsRef.current[peerId]++;
+            setTimeout(() => {
+              if (pc.iceConnectionState === "failed") {
+                console.log(`🔄 Tentative ICE restart pour ${peerId}`);
+                restartIce(peerId);
+              }
+            }, 1000);
+          } else {
+            // Après le premier échec, on affiche juste le bouton de réparation
+            console.log(`⚠️ ICE failed pour ${peerId} - bouton de réparation affiché`);
+          }
+        }
+      } else if (state === "connected" || state === "completed") {
+        // Connexion rétablie
+        console.log(`✅ Connexion ICE établie avec ${peerId}`);
+        setConnectionProblems(prev => ({ ...prev, [peerId]: false }));
+        iceRestartAttemptsRef.current[peerId] = 0; // Reset attempts
       }
-      Object.values(peersRef.current).forEach(peer => {
-        if (peer && typeof peer.close === 'function') {
-          peer.close();
+    };
+    
+    pc.onconnectionstatechange = () => {
+      console.log(`🔌 Connection state pour ${peerId}: ${pc.connectionState}`);
+    };
+    
+    pc.onsignalingstatechange = () => {
+      console.log(`📡 Signaling state pour ${peerId}: ${pc.signalingState}`);
+    };
+    
+    // ============ TRACK MANAGEMENT ============
+    // Add local tracks if we have them
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => {
+        try {
+          if (track.kind === "video") {
+            // STOCKER LE SENDER VIDEO
+            const sender = pc.addTrack(track, localStreamRef.current);
+            videoSendersRef.current[peerId] = sender;
+            console.log(`🎥 Video track ajouté à ${peerId} (sender stocké)`);
+          } else if (track.kind === "audio") {
+            // STOCKER LE SENDER AUDIO
+            const sender = pc.addTrack(track, localStreamRef.current);
+            audioSendersRef.current[peerId] = sender;
+            console.log(`🎤 Audio track ajouté à ${peerId} (sender stocké)`);
+          }
+        } catch (err) {
+          console.error(`❌ Erreur ajout track ${track.kind} à ${peerId}:`, err);
         }
       });
-      Object.values(screenPeersRef.current).forEach(peer => {
-        if (peer && typeof peer.close === 'function') {
-          peer.close();
+    }
+    
+    // ============ REMOTE TRACK HANDLING ============
+    pc.ontrack = (event) => {
+      console.log(`📹 Track reçu de ${peerId}:`, event.track.kind);
+      
+      // Create or update remote stream
+      setRemoteStreams(prev => {
+        const existingStream = prev[peerId];
+        
+        if (existingStream) {
+          // Check if track already exists
+          const existingTrack = existingStream.getTracks().find(t => t.id === event.track.id);
+          if (!existingTrack) {
+            existingStream.addTrack(event.track);
+            console.log(`➕ Track ${event.track.kind} ajouté au stream de ${peerId}`);
+          }
+          return { ...prev, [peerId]: existingStream };
+        } else {
+          // Create new stream
+          const newStream = event.streams[0] || new MediaStream([event.track]);
+          console.log(`✅ Nouveau stream créé pour ${peerId}`);
+          return { ...prev, [peerId]: newStream };
         }
       });
     };
-  }, []);
-
-  const addPendingIceCandidate = (peerId, candidate) => {
-    if (!pendingIceCandidatesRef.current[peerId]) {
-      pendingIceCandidatesRef.current[peerId] = [];
-    }
-    pendingIceCandidatesRef.current[peerId].push(candidate);
-    console.log(`📥 ICE candidate mis en queue pour ${peerId}`);
-  };
-
-  const flushPendingIceCandidates = async (peerId, peer) => {
-    const pending = pendingIceCandidatesRef.current[peerId];
-    if (!pending || pending.length === 0 || !peer) return;
-
-    console.log(`🔄 Évacuation des ${pending.length} ICE candidates pour ${peerId}`);
     
-    for (const candidate of pending) {
-      try {
-        await peer.addIceCandidate(new RTCIceCandidate(candidate));
-        console.log(`✅ ICE candidate évacué pour ${peerId}`);
-      } catch (error) {
-        console.warn(`⚠️ Erreur évacuation ICE candidate pour ${peerId}:`, error.message);
+    // ============ ICE CANDIDATE HANDLING ============
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        console.log(`🧊 ICE candidate généré pour ${peerId}`);
+        socketRef.current.emit('ice-candidate', {
+          to: peerId,
+          candidate: event.candidate
+        });
       }
-    }
+    };
     
-    pendingIceCandidatesRef.current[peerId] = [];
+    // ============ ICE CANDIDATE ERROR ============
+    pc.onicecandidateerror = (event) => {
+      console.warn(`⚠️ ICE candidate error pour ${peerId}:`, event.errorCode, event.errorText);
+    };
+    
+    return pc;
   };
 
-  const cleanupPeerData = (peerId) => {
-    if (peersRef.current[peerId]) {
+  // ============ ICE RESTART ============
+  const restartIce = async (peerId) => {
+    const pc = peerConnectionsRef.current[peerId];
+    if (!pc) return;
+    
+    const state = negotiationStateRef.current[peerId];
+    if (!state) return;
+    
+    try {
+      console.log(`🔄 ICE restart manuel pour ${peerId}`);
+      
+      // Only restart if we're stable and not already making an offer
+      if (pc.signalingState === "stable" && !state.makingOffer) {
+        state.makingOffer = true;
+        const offer = await pc.createOffer({ iceRestart: true });
+        await pc.setLocalDescription(offer);
+        
+        socketRef.current.emit('offer', {
+          to: peerId,
+          offer: pc.localDescription
+        });
+        
+        console.log(`✅ ICE restart offer envoyée à ${peerId}`);
+      } else {
+        console.log(`⚠️ Impossible de restart ICE: signalingState=${pc.signalingState}, makingOffer=${state.makingOffer}`);
+      }
+    } catch (err) {
+      console.error(`❌ Erreur ICE restart pour ${peerId}:`, err);
+    } finally {
+      state.makingOffer = false;
+    }
+  };
+
+  // ============ MANUAL CONNECTION REPAIR ============
+  const repairConnection = (peerId) => {
+    console.log(`🔧 Réparation manuelle de la connexion pour ${peerId}`);
+    restartIce(peerId);
+    
+    // Reset attempts to allow automatic restart if needed again
+    iceRestartAttemptsRef.current[peerId] = 0;
+    setConnectionProblems(prev => ({ ...prev, [peerId]: false }));
+    
+    setNotification({
+      message: `Tentative de réparation de la connexion avec ${participants.find(p => p.id === peerId)?.name || 'le participant'}`,
+      type: 'info',
+      timestamp: Date.now()
+    });
+  };
+
+  // ============ PERFECT NEGOTIATION: HANDLE OFFER ============
+  const handleOffer = async (peerId, remoteOffer) => {
+    console.log(`📨 Traitement offer de ${peerId}`);
+    
+    const pc = peerConnectionsRef.current[peerId];
+    if (!pc) {
+      console.warn(`⚠️ Aucun PeerConnection pour ${peerId}, création...`);
+      createPeerConnection(peerId, true); // Receiver is polite
+      return;
+    }
+    
+    const state = negotiationStateRef.current[peerId];
+    if (!state) {
+      console.error(`❌ État de négociation manquant pour ${peerId}`);
+      return;
+    }
+    
+    try {
+      // ============ PERFECT NEGOTIATION: OFFER COLLISION DETECTION ============
+      const offerCollision = state.makingOffer || pc.signalingState !== "stable";
+      
+      state.ignoreOffer = !state.isPolite && offerCollision;
+      if (state.ignoreOffer) {
+        console.log(`⚠️ Offer ignorée (collision détectée, nous sommes impolite): ${peerId}`);
+        return;
+      }
+      
+      // ============ ROLLBACK IF POLITE PEER ============
+      if (state.isPolite && offerCollision) {
+        console.log(`✅ Peer poli ${peerId}: rollback local description`);
+        await Promise.all([
+          pc.setLocalDescription({ type: "rollback" }),
+          pc.setRemoteDescription(new RTCSessionDescription(remoteOffer))
+        ]);
+      } else {
+        // Normal offer processing
+        await pc.setRemoteDescription(new RTCSessionDescription(remoteOffer));
+      }
+      
+      console.log(`✅ remoteDescription défini pour ${peerId}`);
+      
+      // ============ FLUSH QUEUED ICE CANDIDATES ============
+      await flushIceCandidates(peerId, pc);
+      
+      // ============ CREATE AND SEND ANSWER ============
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      
+      socketRef.current.emit('answer', {
+        to: peerId,
+        answer: pc.localDescription
+      });
+      
+      console.log(`📤 Answer envoyé à ${peerId}`);
+      
+    } catch (err) {
+      console.error(`❌ Erreur traitement offer de ${peerId}:`, err);
+    }
+  };
+
+  // ============ PERFECT NEGOTIATION: HANDLE ANSWER ============
+  const handleAnswer = async (peerId, remoteAnswer) => {
+    console.log(`📨 Traitement answer de ${peerId}`);
+    
+    const pc = peerConnectionsRef.current[peerId];
+    if (!pc) {
+      console.warn(`⚠️ Aucun PeerConnection pour ${peerId} pour answer`);
+      return;
+    }
+    
+    const state = negotiationStateRef.current[peerId];
+    if (!state) {
+      console.error(`❌ État de négociation manquant pour ${peerId}`);
+      return;
+    }
+    
+    try {
+      // ============ PERFECT NEGOTIATION: ANSWER VALIDATION ============
+      // Only accept answer if we're in "have-local-offer" state
+      if (pc.signalingState !== "have-local-offer") {
+        console.warn(`⚠️ Answer ignorée: signalingState = ${pc.signalingState}`);
+        return;
+      }
+      
+      state.isSettingRemoteAnswerPending = true;
+      await pc.setRemoteDescription(new RTCSessionDescription(remoteAnswer));
+      state.isSettingRemoteAnswerPending = false;
+      
+      console.log(`✅ Answer acceptée pour ${peerId}`);
+      
+      // ============ FLUSH QUEUED ICE CANDIDATES ============
+      await flushIceCandidates(peerId, pc);
+      
+    } catch (err) {
+      console.error(`❌ Erreur traitement answer de ${peerId}:`, err);
+      state.isSettingRemoteAnswerPending = false;
+    }
+  };
+
+  // ============ ICE CANDIDATE HANDLING ============
+  const handleIceCandidate = async (peerId, candidate) => {
+    console.log(`🧊 Traitement ICE candidate de ${peerId}`);
+    
+    const pc = peerConnectionsRef.current[peerId];
+    if (!pc) {
+      console.warn(`⚠️ Aucun PeerConnection pour ${peerId}, queue ICE candidate`);
+      // Queue candidate for later
+      if (!iceCandidatesQueueRef.current[peerId]) {
+        iceCandidatesQueueRef.current[peerId] = [];
+      }
+      iceCandidatesQueueRef.current[peerId].push(candidate);
+      return;
+    }
+    
+    try {
+      // If remote description is set, add candidate immediately
+      if (pc.remoteDescription) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        console.log(`✅ ICE candidate ajouté pour ${peerId}`);
+      } else {
+        // Queue candidate until remote description is set
+        console.log(`📥 ICE candidate mis en queue pour ${peerId}`);
+        if (!iceCandidatesQueueRef.current[peerId]) {
+          iceCandidatesQueueRef.current[peerId] = [];
+        }
+        iceCandidatesQueueRef.current[peerId].push(candidate);
+      }
+    } catch (err) {
+      console.error(`❌ Erreur ajout ICE candidate pour ${peerId}:`, err);
+    }
+  };
+
+  // ============ FLUSH QUEUED ICE CANDIDATES ============
+  const flushIceCandidates = async (peerId, pc) => {
+    const queue = iceCandidatesQueueRef.current[peerId];
+    if (!queue || queue.length === 0) return;
+    
+    console.log(`🔄 Évacuation de ${queue.length} ICE candidates pour ${peerId}`);
+    
+    for (const candidate of queue) {
       try {
-        peersRef.current[peerId].close();
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
       } catch (err) {
-        console.warn(`⚠️ Erreur fermeture peer ${peerId}:`, err);
+        console.warn(`⚠️ Erreur évacuation ICE candidate pour ${peerId}:`, err);
       }
-      delete peersRef.current[peerId];
     }
     
-    delete pendingIceCandidatesRef.current[peerId];
-    delete remoteDescriptionsSetRef.current[peerId];
-    delete isNegotiatingRef.current[peerId];
-    delete makingOfferRef.current[peerId];
-    delete ignoreOfferRef.current[peerId];
-    delete isPolitePeerRef.current[peerId];
+    // Clear queue
+    iceCandidatesQueueRef.current[peerId] = [];
+  };
+
+  // ============ SCREEN SHARING: START (SINGLE PEER CONNECTION - ZERO SIGNALING) ============
+  const startScreenShare = async () => {
+    console.log('🖥️ Démarrage du partage d\'écran (ZERO SIGNALING)...');
     
-    // Cleanup ICE restart tracking
-    delete iceRestartInProgressRef.current[peerId];
-    delete iceRestartTimestampRef.current[peerId];
-    delete iceRestartCountRef.current[peerId];
+    try {
+      // Get screen stream
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { 
+          cursor: "always",
+          displaySurface: "monitor"
+        },
+        audio: false
+      });
+      
+      screenStreamRef.current = screenStream;
+      const screenTrack = screenStream.getVideoTracks()[0];
+      
+      if (!screenTrack) {
+        throw new Error("Aucun track vidéo dans le stream d'écran");
+      }
+      
+      // Stocker la piste vidéo originale pour chaque participant
+      Object.keys(peerConnectionsRef.current).forEach(peerId => {
+        // Stocker la caméra originale si ce n'est pas déjà fait
+        if (!originalVideoTracksRef.current[peerId]) {
+          const originalTrack = localStreamRef.current?.getVideoTracks()[0];
+          if (originalTrack) {
+            originalVideoTracksRef.current[peerId] = originalTrack;
+            console.log(`💾 Caméra originale stockée pour ${peerId}`);
+          }
+        }
+      });
+      
+      // ============ PARTAGE D'ÉCRAN SANS NÉGOCIATION - ZERO SIGNALING ============
+      Object.entries(peerConnectionsRef.current).forEach(([peerId, pc]) => {
+        const videoSender = videoSendersRef.current[peerId];
+        if (videoSender) {
+          // Remplacer le track avec l'écran - PAS DE RENÉGOCIATION
+          videoSender.replaceTrack(screenTrack);
+          console.log(`🔄 Track écran remplacé pour ${peerId} (zero signaling)`);
+        }
+      });
+      
+      setIsScreenSharing(true);
+      console.log('✅ Partage d\'écran démarré (SINGLE PEER CONNECTION - ZERO SIGNALING)');
+      
+      // Handle screen sharing stop by user
+      screenTrack.onended = () => {
+        console.log('🖥️ Partage d\'écran terminé par l\'utilisateur');
+        stopScreenShare();
+      };
+      
+      // Notify other participants (pour l'UI seulement)
+      socketRef.current.emit('screen-share-start', { roomId });
+      
+    } catch (err) {
+      console.error('❌ Erreur démarrage partage écran:', err);
+      if (err.name !== 'NotAllowedError') {
+        alert('Impossible de partager l\'écran');
+      }
+    }
+  };
+
+  // ============ SCREEN SHARING: STOP ============
+  const stopScreenShare = () => {
+    console.log('🖥️ Arrêt du partage d\'écran...');
     
-    // Cleanup connection loss tracking
-    delete connectionLossRef.current[peerId];
-    setConnectionLossState(prev => {
+    if (!screenStreamRef.current) {
+      console.warn('⚠️ Aucun stream d\'écran actif');
+      return;
+    }
+    
+    // Stop screen track
+    screenStreamRef.current.getTracks().forEach(track => track.stop());
+    screenStreamRef.current = null;
+    
+    // ============ RESTORER LA CAMÉRA ORIGINALE (ZERO SIGNALING) ============
+    Object.entries(peerConnectionsRef.current).forEach(([peerId, pc]) => {
+      const videoSender = videoSendersRef.current[peerId];
+      const originalTrack = originalVideoTracksRef.current[peerId];
+      
+      if (videoSender && originalTrack) {
+        // Restaurer la caméra originale - PAS DE RENÉGOCIATION
+        videoSender.replaceTrack(originalTrack);
+        console.log(`🔄 Caméra restaurée pour ${peerId} (zero signaling)`);
+      }
+      
+      // Nettoyer le stockage
+      delete originalVideoTracksRef.current[peerId];
+    });
+    
+    setIsScreenSharing(false);
+    console.log('✅ Partage d\'écran arrêté');
+    
+    // Notify other participants (pour l'UI seulement)
+    socketRef.current.emit('screen-share-stop', { roomId });
+  };
+
+  // ============ TOGGLE SCREEN SHARE (WRAPPER) ============
+  const toggleScreenShare = async () => {
+    if (isScreenSharing) {
+      stopScreenShare();
+    } else {
+      await startScreenShare();
+    }
+  };
+
+  // ============ TOGGLE VIDEO/AUDIO (NO RENEGOTIATION) ============
+  const toggleVideo = () => {
+    if (localStreamRef.current) {
+      const videoTrack = localStreamRef.current.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.enabled = !videoTrack.enabled;
+        setIsVideoOn(videoTrack.enabled);
+        console.log(`🎥 Vidéo ${videoTrack.enabled ? 'activée' : 'désactivée'}`);
+        
+        // Notify others
+        socketRef.current.emit('toggle-video', { 
+          roomId, 
+          isVideoOn: videoTrack.enabled 
+        });
+      }
+    }
+  };
+
+  const toggleAudio = () => {
+    if (localStreamRef.current) {
+      const audioTrack = localStreamRef.current.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        setIsAudioOn(audioTrack.enabled);
+        console.log(`🎤 Audio ${audioTrack.enabled ? 'activé' : 'désactivé'}`);
+        
+        // Notify others
+        socketRef.current.emit('toggle-audio', { 
+          roomId, 
+          isAudioOn: audioTrack.enabled 
+        });
+      }
+    }
+  };
+
+  // ============ CLEANUP PEER CONNECTION ============
+  const cleanupPeerConnection = (peerId) => {
+    console.log(`🧹 Nettoyage PeerConnection ${peerId}`);
+    
+    const pc = peerConnectionsRef.current[peerId];
+    if (pc) {
+      pc.close();
+      delete peerConnectionsRef.current[peerId];
+    }
+    
+    // Nettoyer les senders stockés
+    delete videoSendersRef.current[peerId];
+    delete audioSendersRef.current[peerId];
+    
+    // Nettoyer les états
+    delete negotiationStateRef.current[peerId];
+    delete iceCandidatesQueueRef.current[peerId];
+    delete originalVideoTracksRef.current[peerId];
+    delete iceRestartAttemptsRef.current[peerId];
+    
+    // Remove from connection problems
+    setConnectionProblems(prev => {
       const updated = { ...prev };
       delete updated[peerId];
       return updated;
     });
     
+    // Remove from remote streams
     setRemoteStreams(prev => {
       const updated = { ...prev };
       delete updated[peerId];
       return updated;
     });
-    
-    setIceConnectionAttempts(prev => {
-      const updated = { ...prev };
-      delete updated[peerId];
-      return updated;
-    });
   };
 
-  // ============ PERFECT NEGOTIATION HELPER ============
-  const canNegotiate = (peer, peerId) => {
-    if (!peer) return false;
-    if (peer.signalingState !== 'stable') {
-      console.log(`⚠️ Cannot negotiate ${peerId}: signalingState = ${peer.signalingState}`);
-      return false;
-    }
-    if (isNegotiatingRef.current[peerId]) {
-      console.log(`⚠️ Cannot negotiate ${peerId}: already negotiating`);
-      return false;
-    }
-    return true;
-  };
-  // ====================================================
-
-  useEffect(() => {
-    console.log('🔌 Initialisation Socket.io...');
-    
-    // FIX: Prioritize polling on Render (WebSocket often fails initially)
-    // Polling is more reliable for NAT traversal on Render infrastructure
-    socketRef.current = io(SOCKET_SERVER_URL, {
-      transports: ['polling', 'websocket'], // Try polling first (more reliable on Render)
-      reconnection: true,
-      reconnectionAttempts: 10, // Increase attempts for Render
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000, // Exponential backoff
-      timeout: 20000, // Increase timeout for slow connections
-      forceNew: false
-    });
-
-    socketRef.current.on('connect', () => {
-      console.log('✅ Connecté au serveur');
-      setConnectionStatus('Connecté');
-    });
-
-    socketRef.current.on('disconnect', () => {
-      console.log('❌ Déconnecté du serveur');
-      setConnectionStatus('Déconnecté');
-      setHasJoinedRoom(false);
-    });
-
-    socketRef.current.on('existing-users', (users) => {
-      console.log('👥 Utilisateurs existants:', users);
-      users.forEach(user => {
-        addParticipant(user.id, user.name);
-        createPeerConnection(user.id, true);
-      });
-    });
-
-    socketRef.current.on('user-joined', (user) => {
-      console.log('👤 Nouvel utilisateur:', user);
-      addParticipant(user.id, user.name, user.isCreator);
-      createPeerConnection(user.id, false);
-    });
-
-    socketRef.current.on('join-room-confirmation', ({ roomId, userName, success, isCreator: creatorStatus, timestamp }) => {
-      if (success) {
-        setIsCreator(creatorStatus || false);
-        console.log(`✅ Rejoint la salle ${roomId}, créateur: ${creatorStatus || false}`);
-        
-        if (socketRef.current) {
-          socketRef.current.emit('get-media-state', { roomId });
-        }
-      }
-    });
-
-    socketRef.current.on('media-action', ({ action, type, url, currentTime, pageNumber, lastUpdatedServerTime, isPlaying }) => {
-      console.log('🎬 Action média reçue:', action, type);
-      
-      isReceivingRemoteUpdate.current = true;
-      
-      if (action === 'load') {
-        setMediaState({
-          type,
-          url,
-          isPlaying: false,
-          currentTime: 0,
-          lastUpdatedServerTime: lastUpdatedServerTime || Date.now(),
-          pageNumber: type === 'pdf' ? (pageNumber || 1) : null
-        });
-        setShowMediaPlayer(true);
-      } else if (action === 'play' || action === 'pause' || action === 'seek') {
-        if (mediaPlayerRef.current && mediaState) {
-          const player = mediaPlayerRef.current;
-          const timeDiff = Date.now() - (lastUpdatedServerTime || Date.now());
-          const adjustedTime = currentTime + (timeDiff / 1000);
-          
-          if (Math.abs(player.currentTime - adjustedTime) > mediaSyncThreshold / 1000) {
-            player.currentTime = adjustedTime;
-          }
-          
-          if (action === 'play' && !isPlaying) {
-            player.play().catch(err => console.error('Erreur play:', err));
-          } else if (action === 'pause' || action === 'seek') {
-            player.pause();
-          }
-          
-          setMediaState(prev => ({
-            ...prev,
-            isPlaying: action === 'play',
-            currentTime: adjustedTime,
-            lastUpdatedServerTime: lastUpdatedServerTime || Date.now()
-          }));
-        }
-      } else if (action === 'page-change' && type === 'pdf') {
-        setMediaState(prev => ({
-          ...prev,
-          pageNumber: pageNumber || 1,
-          lastUpdatedServerTime: lastUpdatedServerTime || Date.now()
-        }));
-        
-        if (mediaPlayerRef.current && mediaPlayerRef.current.src) {
-          const iframe = document.querySelector('.pdf-viewer');
-          if (iframe) {
-            iframe.src = `${mediaState?.url || ''}#page=${pageNumber || 1}`;
-          }
-        }
-      } else if (action === 'stop') {
-        setMediaState(null);
-        setShowMediaPlayer(false);
-        if (mediaPlayerRef.current) {
-          mediaPlayerRef.current.pause();
-          mediaPlayerRef.current.src = '';
-        }
-      }
-      
-      setTimeout(() => {
-        isReceivingRemoteUpdate.current = false;
-      }, 100);
-    });
-
-    socketRef.current.on('media-state-update', (state) => {
-      console.log('🎬 État média initial reçu:', state);
-      if (!mediaState && state) {
-        setMediaState(state);
-        setShowMediaPlayer(true);
-      }
-    });
-
-    socketRef.current.on('remote-media-control', ({ action, value, controlledBy }) => {
-      console.log(`👑 Contrôle distant: ${action} = ${value} par ${controlledBy}`);
-      
-      if (action === 'toggle-video' || action === 'mute-video') {
-        if (localStreamRef.current) {
-          const videoTrack = localStreamRef.current.getVideoTracks()[0];
-          if (videoTrack) {
-            videoTrack.enabled = value !== false;
-            setIsVideoOn(videoTrack.enabled);
-          }
-        }
-      } else if (action === 'toggle-audio' || action === 'mute-audio') {
-        if (localStreamRef.current) {
-          const audioTrack = localStreamRef.current.getAudioTracks()[0];
-          if (audioTrack) {
-            audioTrack.enabled = value !== false;
-            setIsAudioOn(audioTrack.enabled);
-          }
-        }
-      }
-      
-      setNotification({
-        message: `${controlledBy} a ${action === 'toggle-video' || action === 'mute-video' ? (value ? 'activé' : 'désactivé') : (value ? 'activé' : 'désactivé')} votre ${action.includes('video') ? 'caméra' : 'micro'}`,
-        type: 'info',
-        timestamp: Date.now()
-      });
-      
-      setTimeout(() => setNotification(null), 3000);
-    });
-
-    socketRef.current.on('user-left', (user) => {
-      console.log('👋 Utilisateur parti:', user);
-      removeParticipant(user.id);
-      cleanupPeerData(user.id);
-    });
-
-    // ============ PERFECT NEGOTIATION PATTERN ============
-    socketRef.current.on('offer', async ({ from, offer }) => {
-      console.log('[PERFNEG] 📨 Offre reçue de:', from);
-      
-      let peer = peersRef.current[from];
-      if (!peer) {
-        console.log(`[PERFNEG] 🔗 Création peer ${from} pour traiter l'offre`);
-        peer = await createPeerConnection(from, false);
-        if (!peer) return;
-      }
-      
-      try {
-        // PERFECT NEGOTIATION: Collision detection and handling
-        // Collision occurs when: signalingState !== 'stable' OR we're making an offer
-        // Strategy: Impolite peer (initiator) ignores offer, Polite peer (receiver) accepts it
-        
-        const isPolite = isPolitePeerRef.current[from] || false;
-        const offerCollision = peer.signalingState !== 'stable' || makingOfferRef.current[from];
-        
-        ignoreOfferRef.current[from] = !isPolite && offerCollision;
-        
-        if (ignoreOfferRef.current[from]) {
-          console.log(`[PERFNEG] ⚠️ Offre IGNORÉE (collision détectée, nous sommes impolite): ${from}`);
-          console.log(`   signalingState="${peer.signalingState}", makingOffer=${makingOfferRef.current[from]}`);
-          console.log(`   Nous attendrons notre answer à la place de cette offre`);
-          return;
-        }
-        
-        if (offerCollision) {
-          console.log(`[PERFNEG] ✅ Collision détectée mais nous sommes POLITE - acceptons l'offre distante`);
-        }
-        
-        remoteDescriptionsSetRef.current[from] = false;
-        
-        await peer.setRemoteDescription(new RTCSessionDescription(offer));
-        console.log(`[PERFNEG] ✅ remoteDescription défini pour ${from}`);
-        remoteDescriptionsSetRef.current[from] = true;
-        
-        await flushPendingIceCandidates(from, peer);
-        
-        const answer = await peer.createAnswer();
-        await peer.setLocalDescription(answer);
-        
-        socketRef.current.emit('answer', { to: from, answer });
-        console.log(`[PERFNEG] 📤 Answer envoyé à ${from}`);
-        
-      } catch (error) {
-        console.error(`❌ Erreur traitement offer de ${from}:`, error);
-        // Note: We don't recreate peer. ICE restart will handle recovery if needed.
-      }
-    });
-
-    socketRef.current.on('answer', async ({ from, answer }) => {
-      console.log('[PERFNEG] 📨 Réponse reçue de:', from);
-
-      const peer = peersRef.current[from];
-      if (!peer) {
-        console.warn(`[PERFNEG] ⚠️ Aucun peer trouvé pour ${from}, réponse ignorée`);
-        return;
-      }
-
-      // ============ PERFECT NEGOTIATION: ANSWER ACCEPTANCE ============
-      // RULE: Only accept answer when signalingState === 'have-local-offer'
-      // This prevents InvalidStateError, double-answer, and collision issues
-      const signalingState = peer.signalingState;
-      
-      if (signalingState !== 'have-local-offer') {
-        console.warn(`[PERFNEG] ⚠️ Answer IGNORÉ - signalingState: "${signalingState}" (attendu: "have-local-offer")`);
-        console.warn(`[PERFNEG]    Explication: Un answer ne peut être accepté que si nous avons envoyé une offer`);
-        console.warn(`[PERFNEG]    État indique potentiellement: double-answer, collision, ou offre en attente`);
-        return;
-      }
-      // ==============================================================
-
-      try {
-        remoteDescriptionsSetRef.current[from] = false;
-
-        await peer.setRemoteDescription(new RTCSessionDescription(answer));
-        console.log(`✅ Answer accepté - remoteDescription défini pour ${from}`);
-        remoteDescriptionsSetRef.current[from] = true;
-
-        await flushPendingIceCandidates(from, peer);
-
-      } catch (error) {
-        console.error(`❌ Erreur traitement answer de ${from}:`, error);
-        // Note: We don't recreate peer. ICE restart will handle recovery if needed.
-      }
-    });
-    // ====================================================
-
-    socketRef.current.on('ice-candidate', async ({ from, candidate }) => {
-      console.log('🧊 ICE CANDIDATE reçu de:', from, candidate?.type);
-      
-      const peer = peersRef.current[from];
-      if (!peer) {
-        console.warn(`⚠️ Aucun peer trouvé pour ${from}, candidat ignoré`);
-        return;
-      }
-      
-      const isRemoteDescriptionSet = remoteDescriptionsSetRef.current[from] || peer.remoteDescription;
-      
-      if (!isRemoteDescriptionSet) {
-        console.log(`📥 ICE candidate mis en attente pour ${from} (remoteDescription non défini)`);
-        addPendingIceCandidate(from, candidate);
-        return;
-      }
-      
-      if (candidate) {
-        try {
-          await peer.addIceCandidate(new RTCIceCandidate(candidate));
-          console.log(`✅ ICE candidate ajouté directement pour ${from}`);
-        } catch (error) {
-          if (error.toString().includes('Unknown ufrag') || 
-              error.toString().includes('The remote description was null') ||
-              error.code === 400) {
-            console.warn(`⚠️ Candidat ICE périmé pour ${from}, ignoré:`, error.message);
-          } else {
-            console.error(`❌ Erreur ajout ICE candidate pour ${from}:`, error);
-          }
-        }
-      }
-    });
-
-    socketRef.current.on('user-screen-share-start', ({ userId }) => {
-      console.log(`📺 Partage d'écran démarré par ${userId}`);
-      createScreenPeerConnection(userId, false);
-    });
-
-    socketRef.current.on('user-screen-share-stop', ({ userId }) => {
-      console.log(`📺 Partage d'écran arrêté par ${userId}`);
-      if (screenPeersRef.current[userId]) {
-        try {
-          screenPeersRef.current[userId].close();
-        } catch (err) {
-          console.warn(`⚠️ Erreur fermeture screen peer ${userId}:`, err);
-        }
-        delete screenPeersRef.current[userId];
-      }
-      setScreenStreams(prev => {
-        const updated = { ...prev };
-        delete updated[userId];
-        return updated;
-      });
-    });
-
-    socketRef.current.on('screen-offer', async ({ from, offer }) => {
-      console.log('📺 OFFRE ÉCRAN reçue de:', from);
-      let peer = screenPeersRef.current[from];
-      if (!peer) {
-        peer = await createScreenPeerConnection(from, false);
-      }
-      if (peer) {
-        try {
-          await peer.setRemoteDescription(new RTCSessionDescription(offer));
-          const answer = await peer.createAnswer();
-          await peer.setLocalDescription(answer);
-          socketRef.current.emit('screen-answer', { to: from, answer });
-        } catch (error) {
-          console.error('❌ Erreur traitement screen offer:', error);
-        }
-      }
-    });
-
-    socketRef.current.on('screen-answer', async ({ from, answer }) => {
-      console.log('📺 RÉPONSE ÉCRAN reçue de:', from);
-      const peer = screenPeersRef.current[from];
-      if (peer) {
-        try {
-          await peer.setRemoteDescription(new RTCSessionDescription(answer));
-        } catch (error) {
-          console.error('❌ Erreur traitement screen answer:', error);
-        }
-      }
-    });
-
-    socketRef.current.on('screen-ice-candidate', async ({ from, candidate }) => {
-      console.log('🧊 ICE ÉCRAN reçu de:', from);
-      const peer = screenPeersRef.current[from];
-      if (peer && peer.remoteDescription) {
-        try {
-          await peer.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (error) {
-          console.error('❌ Erreur ajout screen ICE candidate:', error);
-        }
-      }
-    });
-
-    socketRef.current.on('chat-message', (message) => {
-      console.log('💬 Nouveau message reçu:', message);
-      if (message && message.id) {
-        setChatMessages(prev => {
-          const exists = prev.find(m => m.id === message.id);
-          if (exists) {
-            console.log('⚠️ Message déjà présent, ignoré:', message.id);
-            return prev;
-          }
-          console.log('✅ Message ajouté au chat');
-          return [...prev, message];
-        });
-      } else {
-        console.warn('⚠️ Message invalide reçu:', message);
-      }
-    });
-
-    socketRef.current.on('chat-history', (messages) => {
-      console.log('📜 Historique chat:', messages.length, 'messages');
-      setChatMessages(messages);
-    });
-
-    socketRef.current.on('pinned-messages', (messages) => {
-      console.log('📌 Messages épinglés:', messages.length);
-      setPinnedMessages(messages);
-    });
-
-    socketRef.current.on('message-edited', ({ messageId, newText }) => {
-      console.log('✏️ Message édité:', messageId);
-      setChatMessages(prev => prev.map(msg => 
-        msg.id === messageId ? { ...msg, text: newText, isEdited: true } : msg
-      ));
-    });
-
-    socketRef.current.on('message-deleted', ({ messageId }) => {
-      console.log('🗑️ Message supprimé:', messageId);
-      setChatMessages(prev => prev.filter(msg => msg.id !== messageId));
-    });
-
-    socketRef.current.on('message-reacted', ({ messageId, reactions }) => {
-      console.log('😀 Réaction ajoutée:', messageId);
-      setChatMessages(prev => prev.map(msg => 
-        msg.id === messageId ? { ...msg, reactions } : msg
-      ));
-    });
-
-    socketRef.current.on('message-pinned', ({ messageId, isPinned, pinnedMessages }) => {
-      console.log('📌 Message épinglé:', messageId, isPinned);
-      setChatMessages(prev => prev.map(msg => 
-        msg.id === messageId ? { ...msg, isPinned } : msg
-      ));
-      setPinnedMessages(pinnedMessages);
-    });
-
-    socketRef.current.on('user-video-toggle', ({ userId, userName, isVideoOn }) => {
-      console.log('🎥 Vidéo toggle:', userId, userName, isVideoOn);
-      
-      setUserVideoStatus(prev => ({ ...prev, [userId]: isVideoOn }));
-      
-      if (userName) {
-        setNotification({
-          message: `${userName} a ${isVideoOn ? 'activé' : 'coupé'} sa caméra`,
-          type: 'info',
-          timestamp: Date.now()
-        });
-        
-        setTimeout(() => {
-          setNotification(null);
-        }, 3000);
-      }
-      
-      setRemoteStreams(prev => {
-        const stream = prev[userId];
-        if (stream) {
-          stream.getVideoTracks().forEach(track => {
-            track.enabled = isVideoOn;
-          });
-          
-          setTimeout(() => {
-            const videoElement = remoteVideosRef.current[userId];
-            if (videoElement) {
-              videoElement.srcObject = stream;
-              videoElement.load();
-            }
-          }, 50);
-        }
-        return prev;
-      });
-    });
-
-    socketRef.current.on('user-audio-toggle', ({ userId, isAudioOn }) => {
-      console.log('🎤 Audio toggle:', userId, isAudioOn);
-    });
-
-    return () => {
-      if (socketRef.current) {
-        console.log('🔌 Nettoyage socket...');
-        socketRef.current.disconnect();
-      }
-    };
-  }, []);
-
-  // ============ CRÉATION PEER CONNECTION AVEC PERFECT NEGOTIATION ============
-  const createPeerConnection = async (userId, isInitiator) => {
-    try {
-      console.log(`🔗 Création peer ${userId} (initiateur: ${isInitiator})`);
-      
-      cleanupPeerData(userId);
-      
-      const configuration = iceConfig || getDefaultIceConfig();
-      
-      console.log('⚙️ Configuration ICE utilisée:', configuration.iceServers);
-      
-      const peer = new RTCPeerConnection(configuration);
-      peersRef.current[userId] = peer;
-      
-      // Initialiser perfect negotiation
-      pendingIceCandidatesRef.current[userId] = [];
-      remoteDescriptionsSetRef.current[userId] = false;
-      isNegotiatingRef.current[userId] = false;
-      makingOfferRef.current[userId] = false;
-      ignoreOfferRef.current[userId] = false;
-      isPolitePeerRef.current[userId] = !isInitiator; // Initiator = impolite, receiver = polite
-      
-      // Initialize ICE restart tracking
-      iceRestartInProgressRef.current[userId] = false;
-      iceRestartCountRef.current[userId] = 0;
-      iceRestartTimestampRef.current[userId] = 0;
-
-      // ============ PERFECT NEGOTIATION: onnegotiationneeded ============
-      peer.onnegotiationneeded = async () => {
-        console.log(`🔄 Negotiation needed pour ${userId}`);
-        
-        if (!canNegotiate(peer, userId)) {
-          console.log(`⚠️ Negotiation refusée pour ${userId}`);
-          return;
-        }
-        
-        try {
-          isNegotiatingRef.current[userId] = true;
-          makingOfferRef.current[userId] = true;
-          
-          const offer = await peer.createOffer();
-          
-          // Double-check signalingState avant setLocalDescription
-          if (peer.signalingState !== 'stable') {
-            console.log(`⚠️ signalingState non stable, abandon offer pour ${userId}`);
-            return;
-          }
-          
-          await peer.setLocalDescription(offer);
-          
-          socketRef.current.emit('offer', {
-            to: userId,
-            offer: peer.localDescription
-          });
-          
-          console.log(`✅ Offre créée et envoyée à ${userId}`);
-        } catch (error) {
-          console.error(`❌ Erreur création offer pour ${userId}:`, error);
-        } finally {
-          makingOfferRef.current[userId] = false;
-          isNegotiatingRef.current[userId] = false;
-        }
-      };
-      // ==================================================================
-
-      peer.oniceconnectionstatechange = () => {
-        const state = peer.iceConnectionState;
-        console.log(`🔌 État ICE ${userId}:`, state);
-        
-        // ============ ICE RESTART STRATEGY (CRITICAL) ============
-        // Trigger ICE restart on "disconnected" (not "failed")
-        // Max 1 restart attempt per peer with 5 second cooldown
-        if (state === 'disconnected') {
-          console.warn(`⚠️ ICE disconnected (transient) pour ${userId}`);
-          
-          // Check if ICE restart already in progress or already attempted
-          const isInProgress = iceRestartInProgressRef.current[userId];
-          const restartCount = iceRestartCountRef.current[userId] || 0;
-          const lastRestartTime = iceRestartTimestampRef.current[userId] || 0;
-          const timeSinceLastRestart = Date.now() - lastRestartTime;
-          
-          // Only trigger restart if:
-          // 1. Not already in progress
-          // 2. Haven't reached max attempts
-          // 3. Cooldown period has passed
-          // 4. Peer is in stable signaling state
-          // 5. Not already making an offer
-          if (!isInProgress && 
-              restartCount < ICE_RESTART_MAX_ATTEMPTS && 
-              timeSinceLastRestart > ICE_RESTART_COOLDOWN &&
-              peer.signalingState === 'stable' &&
-              !makingOfferRef.current[userId]) {
-            
-            console.log(`[ICE RESTART] 🔄 Déclenchement pour ${userId} (tentative ${restartCount + 1}/${ICE_RESTART_MAX_ATTEMPTS})`);
-            
-            iceRestartInProgressRef.current[userId] = true;
-            iceRestartCountRef.current[userId] = restartCount + 1;
-            iceRestartTimestampRef.current[userId] = Date.now();
-            
-            setTimeout(async () => {
-              try {
-                if (!peer || peer.iceConnectionState !== 'disconnected') {
-                  console.log(`[ICE RESTART] ⚠️ Annulé pour ${userId}: state changed to ${peer?.iceConnectionState || 'peer closed'}`);
-                  iceRestartInProgressRef.current[userId] = false;
-                  return;
-                }
-                
-                // Only initiator creates offer with ICE restart
-                if (isInitiator && peer.signalingState === 'stable') {
-                  isNegotiatingRef.current[userId] = true;
-                  makingOfferRef.current[userId] = true;
-                  
-                  const offer = await peer.createOffer({ iceRestart: true });
-                  await peer.setLocalDescription(offer);
-                  
-                  socketRef.current.emit('offer', {
-                    to: userId,
-                    offer: peer.localDescription
-                  });
-                  
-                  console.log(`[ICE RESTART] ✅ Offer envoyé à ${userId} (timestamp: ${new Date().toISOString()})`);
-                } else {
-                  console.log(`[ICE RESTART] ⚠️ Non-initiator ${userId} attente d'une nouvelle offer`);
-                }
-              } catch (error) {
-                console.error(`[ICE RESTART] ❌ Erreur pour ${userId}:`, error.message);
-              } finally {
-                iceRestartInProgressRef.current[userId] = false;
-                isNegotiatingRef.current[userId] = false;
-                makingOfferRef.current[userId] = false;
-              }
-            }, 500); // Short delay before restart
-          } else if (isInProgress) {
-            console.log(`[ICE RESTART] ℹ️ Déjà en cours pour ${userId}`);
-          } else if (restartCount >= ICE_RESTART_MAX_ATTEMPTS) {
-            console.warn(`[ICE RESTART] ⚠️ Max attempts atteint pour ${userId}. Pas de restart supplémentaire.`);
-          } else if (timeSinceLastRestart <= ICE_RESTART_COOLDOWN) {
-            console.warn(`[ICE RESTART] ⚠️ En cooldown pour ${userId} (${Math.round((ICE_RESTART_COOLDOWN - timeSinceLastRestart) / 1000)}s restantes)`);
-          }
-        } else if (state === 'failed') {
-          // ===== ICE FAILED: Do NOT restart, show error UI =====
-          console.error(`❌ ICE failed définitivement pour ${userId}`);
-          
-          // Mark connection as lost for UI
-          connectionLossRef.current[userId] = true;
-          setConnectionLossState(prev => ({ ...prev, [userId]: true }));
-          
-          setNotification({
-            message: `Connexion perdue avec ${participants.find(p => p.id === userId)?.name || 'un participant'}. Essayez de relancer la vidéo.`,
-            type: 'error',
-            timestamp: Date.now()
-          });
-          
-          // NOTE: No peer recreation. No ICE restart after "failed".
-          // User must manually retry or reconnect.
-        } else if (state === 'connected' || state === 'completed') {
-          console.log(`✅ Connexion ICE établie avec ${userId}`);
-          // Reset ICE restart tracking on successful connection
-          iceRestartCountRef.current[userId] = 0;
-          iceRestartTimestampRef.current[userId] = 0;
-          // Clear connection loss marker
-          connectionLossRef.current[userId] = false;
-          setConnectionLossState(prev => ({ ...prev, [userId]: false }));
-        } else if (state === 'new' || state === 'checking') {
-          console.log(`🔍 ICE checking pour ${userId}...`);
-        }
-      };
-
-      // CRITICAL FIX: DO NOT recreate peer on connectionState='failed'
-      // Use ICE restart instead (handled in oniceconnectionstatechange)
-      peer.onconnectionstatechange = () => {
-        const state = peer.connectionState;
-        console.log(`🔌 État connexion ${userId}:`, state);
-        
-        if (state === 'failed') {
-          // Connection failed - ICE restart is triggered in oniceconnectionstatechange
-          console.error(`❌ Connexion failed pour ${userId} - ICE restart sera tenté...`);
-          // NOTE: Peer is NOT recreated. ICE restart is the recovery mechanism.
-        } else if (state === 'disconnected') {
-          console.warn(`⚠️ Connexion disconnected (transient) pour ${userId}. WebRTC tente une reconnexion...`);
-        } else if (state === 'connected') {
-          console.log(`✅ Connexion établie avec ${userId}`);
-        }
-      };
-
-      peer.onsignalingstatechange = () => {
-        console.log(`📡 État signaling ${userId}:`, peer.signalingState);
-        if (peer.signalingState === 'stable') {
-          isNegotiatingRef.current[userId] = false;
-          makingOfferRef.current[userId] = false;
-        }
-      };
-
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach(track => {
-          console.log(`🎯 Ajout track ${track.kind} (enabled: ${track.enabled}) à peer ${userId}`);
-          try {
-            const existingSenders = peer.getSenders();
-            const trackAlreadyExists = existingSenders.some(sender => 
-              sender.track && sender.track.kind === track.kind
-            );
-            
-            if (!trackAlreadyExists) {
-              peer.addTrack(track, localStreamRef.current);
-              console.log(`✅ Track ${track.kind} ajouté à peer ${userId}`);
-            } else {
-              console.log(`ℹ️ Track ${track.kind} déjà présent dans peer ${userId}`);
-            }
-          } catch (error) {
-            console.error(`❌ Erreur ajout track ${track.kind} à peer ${userId}:`, error);
-          }
-        });
-      }
-
-      peer.ontrack = (event) => {
-        console.log(`📹 Track reçu de ${userId}:`, event.track?.kind, event.track?.enabled);
-        
-        if (!event.track) {
-          console.warn(`⚠️ Aucun track dans l'event pour ${userId}`);
-          return;
-        }
-        
-        const stream = event.streams && event.streams.length > 0 ? event.streams[0] : null;
-        
-        setRemoteStreams(prev => {
-          const existing = prev[userId];
-          
-          if (existing) {
-            const existingTrack = existing.getTracks().find(t => t.id === event.track.id);
-            if (!existingTrack) {
-              existing.addTrack(event.track);
-              console.log(`➕ Track ${event.track.kind} ajouté au stream de ${userId}`);
-            } else {
-              existingTrack.enabled = event.track.enabled;
-              console.log(`🔄 Track ${event.track.kind} mis à jour pour ${userId}`);
-            }
-            
-            setTimeout(() => {
-              const videoElement = remoteVideosRef.current[userId];
-              if (videoElement) {
-                videoElement.srcObject = existing;
-              }
-            }, 100);
-            
-            return { ...prev, [userId]: existing };
-          } else {
-            const newStream = stream || new MediaStream();
-            if (!stream && event.track) {
-              newStream.addTrack(event.track);
-            }
-            
-            console.log(`✅ Nouveau stream pour ${userId}, tracks:`, newStream.getTracks().length);
-            
-            setTimeout(() => {
-              const videoElement = remoteVideosRef.current[userId];
-              if (videoElement) {
-                videoElement.srcObject = newStream;
-              }
-            }, 100);
-            
-            return { ...prev, [userId]: newStream };
-          }
-        });
-      };
-
-      peer.onicecandidate = (event) => {
-        if (event.candidate) {
-          console.log(`🧊 ICE candidate généré pour ${userId}`);
-          socketRef.current.emit('ice-candidate', {
-            to: userId,
-            candidate: event.candidate
-          });
-        } else {
-          console.log(`✅ Fin génération ICE candidates pour ${userId}`);
-        }
-      };
-
-      peer.onicecandidateerror = (event) => {
-        console.error(`❌ Erreur ICE candidate pour ${userId}:`, event.errorCode, event.errorText);
-      };
-
-      if (isInitiator) {
-        try {
-          isNegotiatingRef.current[userId] = true;
-          makingOfferRef.current[userId] = true;
-          
-          const offerOptions = {
-            offerToReceiveAudio: true,
-            offerToReceiveVideo: true
-          };
-          
-          const offer = await peer.createOffer(offerOptions);
-          console.log(`📤 OFFRE créée pour ${userId}`);
-          
-          await peer.setLocalDescription(offer);
-          
-          socketRef.current.emit('offer', {
-            to: userId,
-            offer: peer.localDescription
-          });
-        } catch (error) {
-          console.error('❌ Erreur création offer:', error);
-        } finally {
-          makingOfferRef.current[userId] = false;
-          isNegotiatingRef.current[userId] = false;
-        }
-      }
-
-      return peer;
-    } catch (error) {
-      console.error('❌ Erreur création peer:', error);
-      cleanupPeerData(userId);
-      return null;
-    }
-  };
-
-  const getDefaultIceConfig = () => {
-    return {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' }
-      ],
-      iceCandidatePoolSize: 10,
-      iceTransportPolicy: 'all',
-      bundlePolicy: 'max-bundle',
-      rtcpMuxPolicy: 'require'
-    };
-  };
-
-  const createScreenPeerConnection = async (userId, isInitiator) => {
-    try {
-      if (screenPeersRef.current[userId]) {
-        console.log(`🧹 Nettoyage ancien screen peer ${userId}`);
-        try {
-          screenPeersRef.current[userId].close();
-        } catch (err) {
-          console.warn(`⚠️ Erreur fermeture screen peer ${userId}:`, err);
-        }
-        delete screenPeersRef.current[userId];
-      }
-      
-      const configuration = iceConfig || getDefaultIceConfig();
-      
-      const peer = new RTCPeerConnection(configuration);
-      screenPeersRef.current[userId] = peer;
-
-      peer.oniceconnectionstatechange = () => {
-        console.log(`🔌 État ICE (écran) ${userId}:`, peer.iceConnectionState);
-      };
-
-      peer.onconnectionstatechange = () => {
-        console.log(`🔌 État connexion (écran) ${userId}:`, peer.connectionState);
-      };
-
-      if (isInitiator && screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach(track => {
-          peer.addTrack(track, screenStreamRef.current);
-        });
-      }
-
-      peer.ontrack = (event) => {
-        const stream = event.streams[0];
-        if (stream) {
-          console.log(`📺 Stream d'écran reçu de ${userId}`);
-          setScreenStreams(prev => ({ ...prev, [userId]: stream }));
-          setTimeout(() => {
-            const videoElement = screenVideosRef.current[userId];
-            if (videoElement && stream) {
-              videoElement.srcObject = stream;
-            }
-          }, 100);
-        }
-      };
-
-      peer.onicecandidate = (event) => {
-        if (event.candidate) {
-          socketRef.current.emit('screen-ice-candidate', {
-            to: userId,
-            candidate: event.candidate
-          });
-        }
-      };
-
-      if (isInitiator) {
-        const offer = await peer.createOffer({
-          offerToReceiveAudio: false,
-          offerToReceiveVideo: true
-        });
-        await peer.setLocalDescription(offer);
-        socketRef.current.emit('screen-offer', {
-          to: userId,
-          offer: peer.localDescription
-        });
-      }
-
-      return peer;
-    } catch (error) {
-      console.error('❌ Erreur création screen peer:', error);
-      return null;
-    }
-  };
-
-  const addParticipant = (id, name, isCreator = false) => {
-    setParticipants(prev => {
-      if (prev.find(p => p.id === id)) return prev;
-      console.log(`👤 Participant ajouté: ${name} (${id}), créateur: ${isCreator}`);
-      return [...prev, { id, name, isLocal: false, isCreator }];
-    });
-  };
-
-  const removeParticipant = (id) => {
-    console.log(`👤 Participant retiré: ${id}`);
-    setParticipants(prev => prev.filter(p => p.id !== id));
-  };
-
+  // ============ INITIALIZE LOCAL STREAM ============
   const startLocalStream = async () => {
     try {
-      console.log('🎥 Démarrage du stream local...');
-      
       const constraints = {
         video: {
           width: { ideal: 640 },
@@ -1203,274 +674,246 @@ export default function VideoConferenceApp() {
       };
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      
-      console.log('✅ Stream local obtenu avec succès');
-      console.log('   Tracks vidéo:', stream.getVideoTracks().length);
-      console.log('   Tracks audio:', stream.getAudioTracks().length);
-      
       localStreamRef.current = stream;
+      
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
-        console.log('🎬 Vidéo locale attachée');
       }
       
+      console.log('✅ Stream local initialisé');
       return true;
-    } catch (error) {
-      console.error('❌ Erreur accès média:', error);
-      let errorMessage = 'Impossible d\'accéder à la caméra/micro.';
-      
-      if (error.name === 'NotAllowedError') {
-        errorMessage = 'Permission refusée pour la caméra/micro. Veuillez autoriser l\'accès.';
-      } else if (error.name === 'NotFoundError') {
-        errorMessage = 'Aucune caméra/micro trouvé.';
-      } else if (error.name === 'NotReadableError') {
-        errorMessage = 'La caméra/micro est déjà utilisé par une autre application.';
-      }
-      
-      alert(errorMessage);
+    } catch (err) {
+      console.error('❌ Erreur accès média:', err);
+      alert('Impossible d\'accéder à la caméra/micro');
       return false;
     }
   };
 
+  // ============ JOIN ROOM ============
   const joinRoom = async () => {
     if (!userName.trim() || !roomId.trim()) {
       alert('Veuillez entrer votre nom et un ID de salle');
       return;
     }
 
-    console.log(`🚀 Tentative de rejoindre la salle ${roomId}...`);
     const success = await startLocalStream();
+    if (!success) return;
+
+    setIsInRoom(true);
+    setHasJoinedRoom(true);
     
-    if (success) {
-      setIsInRoom(true);
-      setParticipants([{ id: socketRef.current?.id || 'local', name: userName, isLocal: true }]);
-      
-      if (!iceConfig && isFetchingTurn) {
-        console.log('⏳ En attente de la configuration ICE...');
-        await new Promise(resolve => setTimeout(resolve, 1500));
-      }
-      
-      setTimeout(() => {
-        socketRef.current.emit('join-room', { roomId, userName });
-        setHasJoinedRoom(true);
-        console.log(`✅ Connecté à la salle ${roomId} en tant que ${userName}`);
-      }, 500);
-    }
+    // Add local participant
+    setParticipants([{ 
+      id: socketRef.current?.id || 'local', 
+      name: userName, 
+      isLocal: true 
+    }]);
+    
+    // Join room via signaling
+    socketRef.current.emit('join-room', { roomId, userName });
   };
 
+  // ============ LEAVE ROOM ============
   const leaveRoom = () => {
     console.log('🚪 Quitter la salle...');
     
+    // Cleanup all peer connections
+    Object.keys(peerConnectionsRef.current).forEach(cleanupPeerConnection);
+    
+    // Stop local streams
     [localStreamRef.current, screenStreamRef.current].forEach(stream => {
       if (stream) {
-        stream.getTracks().forEach(track => {
-          track.stop();
-          console.log(`🛑 Track ${track.kind} arrêté`);
-        });
+        stream.getTracks().forEach(track => track.stop());
       }
     });
     
-    Object.keys(peersRef.current).forEach(peerId => {
-      cleanupPeerData(peerId);
-    });
-    
-    Object.entries(screenPeersRef.current).forEach(([id, peer]) => {
-      if (peer) {
-        try {
-          peer.close();
-          console.log(`🔒 Screen peer ${id} fermé`);
-        } catch (err) {
-          console.warn(`⚠️ Erreur fermeture screen peer ${id}:`, err);
-        }
-      }
-    });
-    
-    screenPeersRef.current = {};
-    
+    // Leave signaling room
     if (socketRef.current) {
       socketRef.current.emit('leave-room', { roomId });
     }
     
+    // Reset state
     setIsInRoom(false);
     setParticipants([]);
-    setChatMessages([]);
     setRemoteStreams({});
-    setScreenStreams({});
     setIsScreenSharing(false);
     setHasJoinedRoom(false);
     setShowChat(false);
     setShowParticipants(false);
+    setConnectionProblems({});
+  };
+
+  // ============ SOCKET.IO EVENT HANDLERS ============
+  useEffect(() => {
+    console.log('🔌 Initialisation Socket.io...');
     
-    console.log('✅ Salle quittée avec succès');
-  };
+    socketRef.current = io(SOCKET_SERVER_URL, {
+      transports: ['polling', 'websocket'],
+      reconnection: true,
+      reconnectionAttempts: 10
+    });
 
-  // ============ TOGGLE VIDEO - AUCUNE RENÉGOCIATION ============
-  const toggleVideo = () => {
-    if (localStreamRef.current) {
-      const videoTrack = localStreamRef.current.getVideoTracks()[0];
-      if (videoTrack) {
-        const newState = !videoTrack.enabled;
-        videoTrack.enabled = newState;
-        setIsVideoOn(newState);
-        console.log(`🎥 Vidéo ${newState ? 'activée' : 'désactivée'} - AUCUNE RENÉGOCIATION`);
+    socketRef.current.on('connect', () => {
+      console.log('✅ Connecté au serveur');
+      setConnectionStatus('Connecté');
+    });
+
+    socketRef.current.on('disconnect', () => {
+      console.log('❌ Déconnecté du serveur');
+      setConnectionStatus('Déconnecté');
+    });
+
+    // ============ SIGNALING EVENTS ============
+    socketRef.current.on('existing-users', (users) => {
+      console.log('👥 Utilisateurs existants:', users);
+      users.forEach(user => {
+        // Add participant
+        setParticipants(prev => [...prev, { 
+          id: user.id, 
+          name: user.name, 
+          isLocal: false 
+        }]);
         
-        // Notifier les autres participants via Socket.io SEULEMENT
-        socketRef.current.emit('toggle-video', { roomId, isVideoOn: newState });
-      }
-    }
-  };
-
-  // ============ TOGGLE AUDIO - AUCUNE RENÉGOCIATION ============
-  const toggleAudio = () => {
-    if (localStreamRef.current) {
-      const audioTrack = localStreamRef.current.getAudioTracks()[0];
-      if (audioTrack) {
-        const newState = !audioTrack.enabled;
-        audioTrack.enabled = newState;
-        setIsAudioOn(newState);
-        console.log(`🎤 Audio ${newState ? 'activé' : 'désactivé'} - AUCUNE RENÉGOCIATION`);
-        
-        // Notifier les autres participants via Socket.io SEULEMENT
-        socketRef.current.emit('toggle-audio', { roomId, isAudioOn: newState });
-      } else {
-        console.warn('⚠️ Aucun track audio trouvé');
-      }
-    }
-  };
-  // ==============================================================
-
-  const toggleScreenShare = async () => {
-    if (isScreenSharing) {
-      console.log('🖥️ Arrêt du partage d\'écran...');
-      if (screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach(track => track.stop());
-        screenStreamRef.current = null;
-      }
-      
-      Object.values(screenPeersRef.current).forEach(peer => {
-        if (peer) {
-          try {
-            peer.close();
-          } catch (err) {
-            console.warn(`⚠️ Erreur fermeture screen peer:`, err);
-          }
-        }
+        // Create peer connection (initiator = polite)
+        createPeerConnection(user.id, true);
       });
-      screenPeersRef.current = {};
+    });
+
+    socketRef.current.on('user-joined', (user) => {
+      console.log('👤 Nouvel utilisateur:', user);
       
-      setIsScreenSharing(false);
-      socketRef.current.emit('screen-share-stop', { roomId });
-      console.log('✅ Partage d\'écran arrêté');
-    } else {
+      // Add participant
+      setParticipants(prev => [...prev, { 
+        id: user.id, 
+        name: user.name, 
+        isLocal: false 
+      }]);
+      
+      // Create peer connection (receiver = impolite)
+      createPeerConnection(user.id, false);
+    });
+
+    socketRef.current.on('user-left', (user) => {
+      console.log('👋 Utilisateur parti:', user);
+      
+      // Remove participant
+      setParticipants(prev => prev.filter(p => p.id !== user.id));
+      
+      // Cleanup peer connection
+      cleanupPeerConnection(user.id);
+    });
+
+    // ============ WEBRTC SIGNALING ============
+    socketRef.current.on('offer', ({ from, offer }) => {
+      console.log('📨 Offer reçue de:', from);
+      handleOffer(from, offer);
+    });
+
+    socketRef.current.on('answer', ({ from, answer }) => {
+      console.log('📨 Answer reçue de:', from);
+      handleAnswer(from, answer);
+    });
+
+    socketRef.current.on('ice-candidate', ({ from, candidate }) => {
+      console.log('🧊 ICE candidate reçu de:', from);
+      handleIceCandidate(from, candidate);
+    });
+
+    // ============ OTHER EVENTS ============
+    socketRef.current.on('chat-message', (message) => {
+      setChatMessages(prev => [...prev, message]);
+    });
+
+    socketRef.current.on('chat-history', (messages) => {
+      setChatMessages(messages);
+    });
+
+    socketRef.current.on('toggle-video', ({ userId, isVideoOn }) => {
+      setUserVideoStatus(prev => ({ ...prev, [userId]: isVideoOn }));
+    });
+
+    socketRef.current.on('screen-share-start', ({ userId }) => {
+      console.log(`📺 Partage écran démarré par ${userId}`);
+    });
+
+    socketRef.current.on('screen-share-stop', ({ userId }) => {
+      console.log(`📺 Partage écran arrêté par ${userId}`);
+    });
+
+    socketRef.current.on('join-room-confirmation', ({ success, isCreator }) => {
+      if (success) {
+        setIsCreator(isCreator || false);
+        console.log(`✅ Rejoint la salle, créateur: ${isCreator}`);
+      }
+    });
+
+    // Cleanup on unmount
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+      }
+      
+      // Cleanup all peer connections
+      Object.keys(peerConnectionsRef.current).forEach(cleanupPeerConnection);
+    };
+  }, []);
+
+  // ============ TURN CONFIGURATION FETCH ============
+  useEffect(() => {
+    const fetchTurnCredentials = async () => {
+      if (isFetchingTurn) return;
+      
+      setIsFetchingTurn(true);
       try {
-        console.log('🖥️ Démarrage du partage d\'écran...');
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: { 
-            cursor: "always",
-            displaySurface: "monitor"
-          },
-          audio: false
+        const response = await fetch(`${SOCKET_SERVER_URL}/api/turn-credentials`, {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' },
+          mode: 'cors'
         });
         
-        screenStreamRef.current = screenStream;
-        setIsScreenSharing(true);
-        console.log('✅ Partage d\'écran démarré');
-        
-        socketRef.current.emit('screen-share-start', { roomId });
-        
-        participants.forEach(participant => {
-          if (!participant.isLocal && participant.id !== socketRef.current?.id) {
-            createScreenPeerConnection(participant.id, true);
-          }
-        });
-        
-        screenStream.getVideoTracks()[0].onended = () => {
-          console.log('🖥️ Partage d\'écran terminé par l\'utilisateur');
-          toggleScreenShare();
-        };
-      } catch (error) {
-        console.error('❌ Erreur partage écran:', error);
-        if (error.name !== 'NotAllowedError') {
-          alert('Impossible de partager l\'écran');
+        if (response.ok) {
+          const data = await response.json();
+          
+          // Optimize TURN servers
+          const optimizedServers = [
+            // Google STUN (fast)
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            // TURN servers (max 2 for speed)
+            ...(data.iceServers || []).slice(0, 2)
+          ];
+          
+          setIceConfig({ iceServers: optimizedServers });
+          console.log('✅ Configuration TURN chargée');
         }
+      } catch (err) {
+        console.warn('⚠️ Erreur récupération TURN, utilisation STUN seulement');
+      } finally {
+        setIsFetchingTurn(false);
       }
-    }
-  };
+    };
+    
+    fetchTurnCredentials();
+  }, []);
 
-  const handleFileSelect = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      if (file.size > 10 * 1024 * 1024) {
-        alert('Le fichier est trop volumineux (max 10MB)');
-        return;
-      }
-      setSelectedFile(file);
-      console.log('📄 Fichier sélectionné:', file.name);
-    }
-  };
-
-  const uploadFile = async () => {
-    if (!selectedFile) return null;
-
-    console.log('📤 Upload du fichier...');
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-
-    try {
-      const response = await fetch(`${SOCKET_SERVER_URL}/api/upload`, {
-        method: 'POST',
-        body: formData
-      });
-
-      if (!response.ok) throw new Error('Upload échoué');
-
-      const data = await response.json();
-      console.log('✅ Fichier uploadé avec succès:', data.fileName);
-      setSelectedFile(null);
-      return data;
-    } catch (error) {
-      console.error('❌ Erreur upload:', error);
-      alert('Erreur lors de l\'upload du fichier');
-      return null;
-    }
-  };
-
-  const sendMessage = async () => {
+  // ============ CHAT FUNCTIONS ============
+  const sendMessage = () => {
     const trimmedMessage = messageInput.trim();
-    if (!trimmedMessage) {
-      console.log('⚠️ Message vide, envoi annulé');
-      return;
-    }
-    if (!hasJoinedRoom) {
-      console.log('⚠️ Pas encore dans la salle, envoi annulé');
-      return;
-    }
-    if (!socketRef.current || !socketRef.current.connected) {
-      console.log('⚠️ Socket non connecté, envoi annulé');
+    if (!trimmedMessage || !hasJoinedRoom || !socketRef.current?.connected) {
       return;
     }
 
     console.log('💬 Envoi du message:', trimmedMessage);
-    try {
-      socketRef.current.emit('chat-message', { 
-        roomId, 
-        message: trimmedMessage,
-        fileUrl: null,
-        fileName: null,
-        fileType: null,
-        fileSize: null
-      });
-      
-      setMessageInput('');
-      setSelectedFile(null);
-      
-      setTimeout(() => {
-        messageInputRef.current?.focus();
-      }, 100);
-    } catch (error) {
-      console.error('❌ Erreur lors de l\'envoi du message:', error);
-      alert('Erreur lors de l\'envoi du message. Veuillez réessayer.');
-    }
+    socketRef.current.emit('chat-message', { 
+      roomId, 
+      message: trimmedMessage 
+    });
+    
+    setMessageInput('');
+    
+    setTimeout(() => {
+      messageInputRef.current?.focus();
+    }, 100);
   };
 
   const editMessage = (messageId, currentText) => {
@@ -1502,168 +945,9 @@ export default function VideoConferenceApp() {
 
   const reactToMessage = (messageId, reaction) => {
     console.log('😀 Réaction au message:', messageId, reaction);
-    
-    const message = chatMessages.find(m => m.id === messageId);
-    const currentUserId = socketRef.current?.id;
-    
-    if (message && message.reactions && message.reactions[reaction]) {
-      const hasThisReaction = message.reactions[reaction].includes(currentUserId);
-      if (hasThisReaction) {
-        socketRef.current.emit('react-message', { roomId, messageId, reaction });
-      } else {
-        socketRef.current.emit('react-message', { roomId, messageId, reaction });
-      }
-    } else {
-      socketRef.current.emit('react-message', { roomId, messageId, reaction });
-    }
-    
+    socketRef.current.emit('react-message', { roomId, messageId, reaction });
     setShowEmojiPicker(null);
     setShowMessageMenu(null);
-  };
-
-  const loadMedia = async (file) => {
-    if (!isCreator) {
-      alert('Seul le créateur de la salle peut partager des médias');
-      return;
-    }
-
-    if (!file) return;
-
-    const fileType = file.type;
-    let mediaType = null;
-    
-    if (fileType.startsWith('video/')) mediaType = 'video';
-    else if (fileType.startsWith('audio/')) mediaType = 'audio';
-    else if (fileType === 'application/pdf') mediaType = 'pdf';
-    else {
-      alert('Type de fichier non supporté. Utilisez vidéo, audio ou PDF.');
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append('file', file);
-
-    try {
-      const response = await fetch(`${SOCKET_SERVER_URL}/api/upload`, {
-        method: 'POST',
-        body: formData
-      });
-
-      if (!response.ok) throw new Error('Upload échoué');
-      const data = await response.json();
-
-      socketRef.current.emit('media-action', {
-        roomId,
-        action: 'load',
-        type: mediaType,
-        url: data.fileUrl
-      });
-
-      setMediaState({
-        type: mediaType,
-        url: data.fileUrl,
-        isPlaying: false,
-        currentTime: 0,
-        lastUpdatedServerTime: Date.now(),
-        pageNumber: mediaType === 'pdf' ? 1 : null
-      });
-      setShowMediaPlayer(true);
-    } catch (error) {
-      console.error('Erreur upload média:', error);
-      alert('Erreur lors du chargement du média');
-    }
-  };
-
-  const handleMediaPlay = () => {
-    if (!isCreator || !mediaPlayerRef.current) return;
-    
-    if (isReceivingRemoteUpdate.current) return;
-    
-    const player = mediaPlayerRef.current;
-    const currentTime = player.currentTime || 0;
-    
-    socketRef.current.emit('media-action', {
-      roomId,
-      action: 'play',
-      type: mediaState?.type,
-      currentTime
-    });
-
-    setMediaState(prev => ({
-      ...prev,
-      isPlaying: true,
-      currentTime,
-      lastUpdatedServerTime: Date.now()
-    }));
-  };
-
-  const handleMediaPause = () => {
-    if (!isCreator || !mediaPlayerRef.current) return;
-    
-    if (isReceivingRemoteUpdate.current) return;
-    
-    const player = mediaPlayerRef.current;
-    const currentTime = player.currentTime || 0;
-    
-    socketRef.current.emit('media-action', {
-      roomId,
-      action: 'pause',
-      type: mediaState?.type,
-      currentTime
-    });
-
-    setMediaState(prev => ({
-      ...prev,
-      isPlaying: false,
-      currentTime,
-      lastUpdatedServerTime: Date.now()
-    }));
-  };
-
-  const handleMediaSeek = (time) => {
-    if (!isCreator || !mediaPlayerRef.current) return;
-    
-    if (isReceivingRemoteUpdate.current) return;
-    
-    socketRef.current.emit('media-action', {
-      roomId,
-      action: 'seek',
-      type: mediaState?.type,
-      currentTime: time
-    });
-
-    setMediaState(prev => ({
-      ...prev,
-      currentTime: time,
-      isPlaying: false,
-      lastUpdatedServerTime: Date.now()
-    }));
-  };
-
-  const stopMedia = () => {
-    if (!isCreator) return;
-    
-    socketRef.current.emit('media-action', {
-      roomId,
-      action: 'stop'
-    });
-
-    setMediaState(null);
-    setShowMediaPlayer(false);
-  };
-
-  const controlUserMedia = (targetUserId, action, value) => {
-    if (!isCreator) {
-      alert('Seul le créateur peut contrôler les autres participants');
-      return;
-    }
-
-    socketRef.current.emit('control-user-media', {
-      roomId,
-      targetUserId,
-      action,
-      value
-    });
   };
 
   const pinMessage = (messageId) => {
@@ -1672,14 +956,19 @@ export default function VideoConferenceApp() {
     setShowMessageMenu(null);
   };
 
+  // ============ UI HELPERS ============
+  const generateRoomId = () => {
+    return Math.random().toString(36).substring(2, 10).toUpperCase();
+  };
+
   const copyRoomId = () => {
     navigator.clipboard.writeText(roomId);
     setCopied(true);
-    console.log('📋 ID de salle copié:', roomId);
     setTimeout(() => setCopied(false), 2000);
   };
 
   const formatFileSize = (bytes) => {
+    if (!bytes) return '';
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
@@ -1725,6 +1014,29 @@ export default function VideoConferenceApp() {
     </div>
   );
 
+  // ============ SCROLL TO BOTTOM ============
+  useEffect(() => {
+    if (chatMessagesEndRef.current) {
+      chatMessagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [chatMessages]);
+
+  // ============ CLICK OUTSIDE HANDLERS ============
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showMessageMenu && !messageMenuRefs.current[showMessageMenu]?.contains(event.target)) {
+        setShowMessageMenu(null);
+      }
+      if (showEmojiPicker && !event.target.closest('.emoji-picker') && !event.target.closest('.add-reaction-btn')) {
+        setShowEmojiPicker(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showMessageMenu, showEmojiPicker]);
+
+  // ============ RENDER LOGIN SCREEN ============
   if (!isInRoom) {
     return (
       <div className="login-container">
@@ -1740,7 +1052,7 @@ export default function VideoConferenceApp() {
               </div>
             </div>
             <h1 className="app-title">MeetHub Pro</h1>
-            <p className="app-subtitle">Visioconférence nouvelle génération</p>
+            <p className="app-subtitle">Architecture WebRTC Professionnelle</p>
             <div className={`status-badge ${connectionStatus === 'Connecté' ? 'connected' : 'disconnected'}`}>
               <span className="status-dot"></span>
               {connectionStatus}
@@ -1786,17 +1098,20 @@ export default function VideoConferenceApp() {
           </div>
 
           <div className="features-list">
-            <div className="feature">✓ Traversée NAT (STUN/TURN)</div>
+            <div className="feature">✓ Single PeerConnection</div>
+            <div className="feature">✓ Perfect Negotiation</div>
+            <div className="feature">✓ Screen Sharing Zero-Signaling</div>
+            <div className="feature">✓ NAT Traversal (bundlePolicy: max-bundle)</div>
             <div className="feature">✓ 100+ participants</div>
             <div className="feature">✓ Qualité HD</div>
-            <div className="feature">✓ Partage d'écran</div>
-            <div className="feature">✓ Chat avancé</div>
+            <div className="feature">✓ Interface de secours ICE</div>
           </div>
         </div>
       </div>
     );
   }
 
+  // ============ RENDER VIDEO ROOM ============
   return (
     <div className="video-room">
       {notification && (
@@ -1864,7 +1179,7 @@ export default function VideoConferenceApp() {
               <div className="media-player-header">
                 <span>Média partagé {isCreator && '(Vous contrôlez)'}</span>
                 {isCreator && (
-                  <button onClick={stopMedia} className="close-media-btn" title="Arrêter le média">
+                  <button onClick={() => setShowMediaPlayer(false)} className="close-media-btn">
                     <X size={18} />
                   </button>
                 )}
@@ -1875,9 +1190,6 @@ export default function VideoConferenceApp() {
                     ref={mediaPlayerRef}
                     src={mediaState.url}
                     controls
-                    onPlay={handleMediaPlay}
-                    onPause={handleMediaPause}
-                    onSeeked={(e) => handleMediaSeek(e.target.currentTime)}
                     className="media-player-element"
                   />
                 )}
@@ -1886,76 +1198,19 @@ export default function VideoConferenceApp() {
                     ref={mediaPlayerRef}
                     src={mediaState.url}
                     controls
-                    onPlay={handleMediaPlay}
-                    onPause={handleMediaPause}
-                    onSeeked={(e) => handleMediaSeek(e.target.currentTime)}
                     className="media-player-audio"
                   />
                 )}
                 {mediaState.type === 'pdf' && (
                   <div className="media-player-pdf">
                     <iframe
-                      ref={mediaPlayerRef}
                       src={`${mediaState.url}#page=${mediaState.pageNumber || 1}`}
                       className="pdf-viewer"
                       title="PDF Viewer"
-                      key={`pdf-${mediaState.pageNumber || 1}`}
                     />
-                    <div className="pdf-controls">
-                      <button onClick={() => {
-                        if (isReceivingRemoteUpdate.current) return;
-                        const newPage = Math.max(1, (mediaState.pageNumber || 1) - 1);
-                        if (isCreator && newPage !== (mediaState.pageNumber || 1)) {
-                          socketRef.current.emit('media-action', {
-                            roomId,
-                            action: 'page-change',
-                            type: 'pdf',
-                            pageNumber: newPage
-                          });
-                          setMediaState(prev => ({ ...prev, pageNumber: newPage, lastUpdatedServerTime: Date.now() }));
-                        }
-                      }} disabled={!isCreator || (mediaState.pageNumber || 1) <= 1}>
-                        ← Page précédente
-                      </button>
-                      <span>Page {mediaState.pageNumber || 1}</span>
-                      <button onClick={() => {
-                        if (isReceivingRemoteUpdate.current) return;
-                        const newPage = (mediaState.pageNumber || 1) + 1;
-                        if (isCreator) {
-                          socketRef.current.emit('media-action', {
-                            roomId,
-                            action: 'page-change',
-                            type: 'pdf',
-                            pageNumber: newPage
-                          });
-                          setMediaState(prev => ({ ...prev, pageNumber: newPage, lastUpdatedServerTime: Date.now() }));
-                        }
-                      }} disabled={!isCreator}>
-                        Page suivante →
-                      </button>
-                    </div>
                   </div>
                 )}
               </div>
-            </div>
-          )}
-
-          {isCreator && !showMediaPlayer && (
-            <div className="media-upload-section">
-              <input
-                type="file"
-                id="media-upload"
-                accept="video/*,audio/*,.pdf"
-                onChange={(e) => {
-                  const file = e.target.files[0];
-                  if (file) loadMedia(file);
-                  e.target.value = '';
-                }}
-                style={{ display: 'none' }}
-              />
-              <label htmlFor="media-upload" className="media-upload-btn">
-                📁 Partager un média (vidéo, audio ou PDF)
-              </label>
             </div>
           )}
 
@@ -1988,22 +1243,14 @@ export default function VideoConferenceApp() {
               const hasVideo = remoteStreams[participant.id] && userVideoStatus[participant.id] !== false;
               const stream = remoteStreams[participant.id];
               const videoDisabled = userVideoStatus[participant.id] === false;
-              const audioDisabled = stream && stream.getAudioTracks().length > 0 && !stream.getAudioTracks()[0].enabled;
+              const hasConnectionProblem = connectionProblems[participant.id];
               
               return (
                 <div key={participant.id} className="video-tile">
                   <video
                     ref={el => {
-                      if (!el) return;
-                      remoteVideosRef.current[participant.id] = el;
-                      if (stream) {
+                      if (el && stream) {
                         el.srcObject = stream;
-                        el.muted = false;
-                        if (stream.getVideoTracks().length > 0) {
-                          stream.getVideoTracks().forEach(track => {
-                            track.enabled = !videoDisabled;
-                          });
-                        }
                       }
                     }}
                     autoPlay
@@ -2016,7 +1263,7 @@ export default function VideoConferenceApp() {
                     <span className="participant-name">{participant.name}</span>
                     <div className="video-indicators">
                       {videoDisabled && <VideoOff size={16} />}
-                      {audioDisabled && <MicOff size={16} />}
+                      {hasConnectionProblem && <WifiOff size={16} className="connection-problem-icon" />}
                     </div>
                   </div>
                   {(!stream || videoDisabled) && (
@@ -2026,31 +1273,22 @@ export default function VideoConferenceApp() {
                       </div>
                     </div>
                   )}
-                </div>
-              );
-            })}
-
-            {Object.entries(screenStreams).map(([userId, stream]) => {
-              const participant = participants.find(p => p.id === userId);
-              return (
-                <div key={`screen-${userId}`} className="video-tile screen-share-tile">
-                  <video
-                    ref={el => {
-                      screenVideosRef.current[userId] = el;
-                      if (el && stream) {
-                        el.srcObject = stream;
-                      }
-                    }}
-                    autoPlay
-                    playsInline
-                    className="video-element"
-                  />
-                  <div className="video-overlay">
-                    <Monitor size={16} />
-                    <span className="participant-name">
-                      Écran de {participant?.name || 'Participant'}
-                    </span>
-                  </div>
+                  
+                  {/* BOUTON DE RÉPARATION DE CONNEXION */}
+                  {hasConnectionProblem && (
+                    <div className="connection-repair-overlay">
+                      <div className="connection-problem-alert">
+                        <AlertCircle size={20} />
+                        <span>Problème de connexion</span>
+                        <button 
+                          onClick={() => repairConnection(participant.id)}
+                          className="repair-connection-btn"
+                        >
+                          <WifiOff size={16} /> Réparer
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -2144,12 +1382,6 @@ export default function VideoConferenceApp() {
                                       <span className="file-size">{formatFileSize(msg.fileSize)}</span>
                                     </div>
                                   </a>
-                                  {msg.fileType?.startsWith('image/') && (
-                                    <img src={msg.fileUrl} alt={msg.fileName} className="message-image" />
-                                  )}
-                                  {msg.fileType?.startsWith('audio/') && (
-                                    <audio src={msg.fileUrl} controls className="message-audio" />
-                                  )}
                                 </div>
                               )}
                             </div>
@@ -2245,7 +1477,7 @@ export default function VideoConferenceApp() {
               {activeTab === 'participants' && (
                 <div className="participants-list">
                   {participants.map((participant) => (
-                    <div key={participant.id} className={`participant-item ${connectionLossState[participant.id] ? 'connection-lost' : ''}`}>
+                    <div key={participant.id} className={`participant-item ${connectionProblems[participant.id] ? 'connection-problem' : ''}`}>
                       <div className="participant-avatar">
                         {participant.name.charAt(0).toUpperCase()}
                       </div>
@@ -2253,24 +1485,37 @@ export default function VideoConferenceApp() {
                         <span className="participant-name">{participant.name}</span>
                         {participant.isLocal && <span className="you-badge">Vous</span>}
                         {participant.isCreator && <span className="creator-badge">👑 Créateur</span>}
-                        {connectionLossState[participant.id] && <span className="connection-lost-badge">⚠️ Connexion perdue</span>}
+                        {connectionProblems[participant.id] && (
+                          <span className="connection-problem-badge">
+                            <WifiOff size={12} /> Problème de connexion
+                          </span>
+                        )}
                       </div>
                       {isCreator && !participant.isLocal && (
                         <div className="participant-controls">
                           <button
-                            onClick={() => controlUserMedia(participant.id, 'toggle-video', !userVideoStatus[participant.id])}
+                            onClick={() => {}}
                             className="control-participant-btn"
-                            title={`${userVideoStatus[participant.id] === false ? 'Activer' : 'Désactiver'} la caméra`}
+                            title="Désactiver la caméra"
                           >
                             <Video size={16} />
                           </button>
                           <button
-                            onClick={() => controlUserMedia(participant.id, 'toggle-audio', true)}
+                            onClick={() => {}}
                             className="control-participant-btn"
                             title="Désactiver le micro"
                           >
                             <Mic size={16} />
                           </button>
+                          {connectionProblems[participant.id] && (
+                            <button
+                              onClick={() => repairConnection(participant.id)}
+                              className="control-participant-btn repair-btn"
+                              title="Réparer la connexion"
+                            >
+                              <WifiOff size={16} />
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
