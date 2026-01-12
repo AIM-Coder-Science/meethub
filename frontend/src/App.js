@@ -176,32 +176,37 @@ export default function VideoConferenceApp() {
       console.log(`🔌 ICE state pour ${peerId}: ${state}`);
       
       // Gestion des problèmes de connexion
-      if (state === "disconnected" || state === "failed") {
+      if (state === "disconnected") {
+        console.warn(`⚠️ Déconnexion ICE détectée pour ${peerId} (transitoire)`);
+        // Attendre avant de marquer comme problème - peut être temporaire (screen sharing, etc)
+        // Ne pas marquer comme problème immédiatement
+      } else if (state === "failed") {
         console.warn(`⚠️ Problème ICE pour ${peerId}: ${state}`);
         
         // Marquer le participant comme ayant des problèmes de connexion
         setConnectionProblems(prev => ({ ...prev, [peerId]: true }));
         
-        if (state === "failed") {
-          // Premier restart automatique
-          if (iceRestartAttemptsRef.current[peerId] < 1) {
-            iceRestartAttemptsRef.current[peerId]++;
-            setTimeout(() => {
-              if (pc.iceConnectionState === "failed") {
-                console.log(`🔄 Tentative ICE restart pour ${peerId}`);
-                restartIce(peerId);
-              }
-            }, 1000);
-          } else {
-            // Après le premier échec, on affiche juste le bouton de réparation
-            console.log(`⚠️ ICE failed pour ${peerId} - bouton de réparation affiché`);
-          }
+        // Premier restart automatique
+        if (iceRestartAttemptsRef.current[peerId] < 1) {
+          iceRestartAttemptsRef.current[peerId]++;
+          setTimeout(() => {
+            if (pc.iceConnectionState === "failed") {
+              console.log(`🔄 Tentative ICE restart pour ${peerId}`);
+              restartIce(peerId);
+            }
+          }, 1000);
+        } else {
+          // Après le premier échec, on affiche juste le bouton de réparation
+          console.log(`⚠️ ICE failed pour ${peerId} - bouton de réparation affiché`);
         }
       } else if (state === "connected" || state === "completed") {
         // Connexion rétablie
         console.log(`✅ Connexion ICE établie avec ${peerId}`);
         setConnectionProblems(prev => ({ ...prev, [peerId]: false }));
         iceRestartAttemptsRef.current[peerId] = 0; // Reset attempts
+      } else if (state === "checking") {
+        // Connexion en cours - possible rétablissement après disconnected
+        console.log(`🔍 ICE checking pour ${peerId}`);
       }
     };
     
@@ -362,8 +367,17 @@ export default function VideoConferenceApp() {
           pc.setLocalDescription({ type: "rollback" }),
           pc.setRemoteDescription(new RTCSessionDescription(remoteOffer))
         ]);
+        console.log(`✅ remoteDescription défini pour ${peerId}`);
+        
+        // ============ FLUSH QUEUED ICE CANDIDATES ============
+        await flushIceCandidates(peerId, pc);
+        
+        // ============ POLITE PEER: WAIT FOR onnegotiationneeded ============
+        // Polite peer lets impolite peer create the offer
+        console.log(`🔄 Peer poli attend onnegotiationneeded de ${peerId}`);
+        return;
       } else {
-        // Normal offer processing
+        // Normal offer processing (impolite or no collision)
         await pc.setRemoteDescription(new RTCSessionDescription(remoteOffer));
       }
       
@@ -406,8 +420,9 @@ export default function VideoConferenceApp() {
     
     try {
       // ============ PERFECT NEGOTIATION: ANSWER VALIDATION ============
-      // Only accept answer if we're in "have-local-offer" state
-      if (pc.signalingState !== "have-local-offer") {
+      // Accept answer if we're in "have-local-offer" state (impolite path)
+      // OR in "have-remote-offer" state (polite path after rollback)
+      if (pc.signalingState !== "have-local-offer" && pc.signalingState !== "have-remote-offer") {
         console.warn(`⚠️ Answer ignorée: signalingState = ${pc.signalingState}`);
         return;
       }
@@ -515,14 +530,20 @@ export default function VideoConferenceApp() {
       });
       
       // ============ PARTAGE D'ÉCRAN SANS NÉGOCIATION - ZERO SIGNALING ============
-      Object.entries(peerConnectionsRef.current).forEach(([peerId, pc]) => {
+      const replacePromises = Object.entries(peerConnectionsRef.current).map(async ([peerId, pc]) => {
         const videoSender = videoSendersRef.current[peerId];
         if (videoSender) {
-          // Remplacer le track avec l'écran - PAS DE RENÉGOCIATION
-          videoSender.replaceTrack(screenTrack);
-          console.log(`🔄 Track écran remplacé pour ${peerId} (zero signaling)`);
+          try {
+            // Remplacer le track avec l'écran - PAS DE RENÉGOCIATION
+            await videoSender.replaceTrack(screenTrack);
+            console.log(`🔄 Track écran remplacé pour ${peerId} (zero signaling)`);
+          } catch (err) {
+            console.error(`❌ Erreur remplacement track écran pour ${peerId}:`, err);
+          }
         }
       });
+      
+      await Promise.all(replacePromises);
       
       setIsScreenSharing(true);
       console.log('✅ Partage d\'écran démarré (SINGLE PEER CONNECTION - ZERO SIGNALING)');
@@ -545,7 +566,7 @@ export default function VideoConferenceApp() {
   };
 
   // ============ SCREEN SHARING: STOP ============
-  const stopScreenShare = () => {
+  const stopScreenShare = async () => {
     console.log('🖥️ Arrêt du partage d\'écran...');
     
     if (!screenStreamRef.current) {
@@ -558,19 +579,25 @@ export default function VideoConferenceApp() {
     screenStreamRef.current = null;
     
     // ============ RESTORER LA CAMÉRA ORIGINALE (ZERO SIGNALING) ============
-    Object.entries(peerConnectionsRef.current).forEach(([peerId, pc]) => {
+    const restorePromises = Object.entries(peerConnectionsRef.current).map(async ([peerId, pc]) => {
       const videoSender = videoSendersRef.current[peerId];
       const originalTrack = originalVideoTracksRef.current[peerId];
       
       if (videoSender && originalTrack) {
-        // Restaurer la caméra originale - PAS DE RENÉGOCIATION
-        videoSender.replaceTrack(originalTrack);
-        console.log(`🔄 Caméra restaurée pour ${peerId} (zero signaling)`);
+        try {
+          // Restaurer la caméra originale - PAS DE RENÉGOCIATION
+          await videoSender.replaceTrack(originalTrack);
+          console.log(`🔄 Caméra restaurée pour ${peerId} (zero signaling)`);
+        } catch (err) {
+          console.error(`❌ Erreur restauration caméra pour ${peerId}:`, err);
+        }
       }
       
       // Nettoyer le stockage
       delete originalVideoTracksRef.current[peerId];
     });
+    
+    await Promise.all(restorePromises);
     
     setIsScreenSharing(false);
     console.log('✅ Partage d\'écran arrêté');
