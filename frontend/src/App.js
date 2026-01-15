@@ -139,32 +139,48 @@ export default function VideoConferenceApp() {
       if (!state) return;
       
       // VERROU DE NÉGOCIATION STRICT
-      if (pc.signalingState !== "stable" || state.makingOffer) {
-        console.log(`🔒 Negotiation bloquée: signalingState=${pc.signalingState}, makingOffer=${state.makingOffer}`);
+      if (state.makingOffer) {
+        console.log(`🔒 Negotiation bloquée: makingOffer=${state.makingOffer}`);
         return;
       }
       
       try {
         state.makingOffer = true;
         
-        // Create offer
-        const offer = await pc.createOffer({
-          offerToReceiveAudio: true,
-          offerToReceiveVideo: true
-        });
-        
-        // Set local description
-        await pc.setLocalDescription(offer);
-        console.log(`✅ Offer créée pour ${peerId}`);
-        
-        // Send offer via signaling
-        socketRef.current.emit('offer', {
-          to: peerId,
-          offer: pc.localDescription
-        });
+        if (pc.signalingState === "have-remote-offer") {
+          // We have a remote offer, create answer instead
+          console.log(`📤 Création answer pour ${peerId} (have-remote-offer)`);
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          
+          socketRef.current.emit('answer', {
+            to: peerId,
+            answer: pc.localDescription
+          });
+          
+          console.log(`📤 Answer envoyé pour ${peerId}`);
+        } else if (pc.signalingState === "stable") {
+          // Create offer
+          const offer = await pc.createOffer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: true
+          });
+          
+          // Set local description
+          await pc.setLocalDescription(offer);
+          console.log(`✅ Offer créée pour ${peerId}`);
+          
+          // Send offer via signaling
+          socketRef.current.emit('offer', {
+            to: peerId,
+            offer: pc.localDescription
+          });
+        } else {
+          console.log(`🔒 Negotiation ignorée: signalingState=${pc.signalingState}`);
+        }
         
       } catch (err) {
-        console.error(`❌ Erreur création offer pour ${peerId}:`, err);
+        console.error(`❌ Erreur négociation pour ${peerId}:`, err);
       } finally {
         state.makingOffer = false;
       }
@@ -372,9 +388,16 @@ export default function VideoConferenceApp() {
         // ============ FLUSH QUEUED ICE CANDIDATES ============
         await flushIceCandidates(peerId, pc);
         
-        // ============ POLITE PEER: WAIT FOR onnegotiationneeded ============
-        // Polite peer lets impolite peer create the offer
-        console.log(`🔄 Peer poli attend onnegotiationneeded de ${peerId}`);
+        // ============ CREATE AND SEND ANSWER AFTER ROLLBACK ============
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        
+        socketRef.current.emit('answer', {
+          to: peerId,
+          answer: pc.localDescription
+        });
+        
+        console.log(`📤 Answer envoyé après rollback pour ${peerId}`);
         return;
       } else {
         // Normal offer processing (impolite or no collision)
@@ -1065,6 +1088,16 @@ export default function VideoConferenceApp() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showMessageMenu, showEmojiPicker]);
 
+  // ============ FOCUS CHAT INPUT ON MOBILE ============
+  useEffect(() => {
+    if (showChat && activeTab === 'chat' && messageInputRef.current) {
+      // Small delay to ensure the input is rendered
+      setTimeout(() => {
+        messageInputRef.current?.focus();
+      }, 100);
+    }
+  }, [showChat, activeTab]);
+
   // ============ RENDER LOGIN SCREEN ============
   if (!isInRoom) {
     return (
@@ -1494,6 +1527,13 @@ export default function VideoConferenceApp() {
                         autoComplete="off"
                         inputMode="text"
                         enterKeyHint="send"
+                        autoFocus={showChat && activeTab === 'chat'}
+                        onFocus={() => {
+                          // Scroll to bottom when focusing on mobile
+                          setTimeout(() => {
+                            chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                          }, 300);
+                        }}
                       />
                       <button onClick={sendMessage} className="send-btn" disabled={!messageInput.trim()}>
                         <Send size={20} />

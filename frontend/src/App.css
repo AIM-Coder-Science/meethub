@@ -1239,6 +1239,11 @@ html, body {
   white-space: pre-wrap;
   word-wrap: break-word;
   line-height: 1.4;
+  /* Force keyboard on mobile */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* Prevent zoom on focus */
+  font-size: 16px;
 }
 
 .message-input:focus {
@@ -1985,6 +1990,11 @@ html, body {
     line-height: 1.4;
     /* Prevent flickering */
     will-change: background-color;
+    /* Force keyboard on mobile */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    /* Prevent zoom on focus */
+    font-size: 16px;
   }
   
   .message-input:focus {
