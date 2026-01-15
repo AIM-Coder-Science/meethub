@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Video, VideoOff, Mic, MicOff, Phone, PhoneOff, MessageSquare, Users, Monitor, Copy, Check, MonitorOff, Send, Image as ImageIcon, Paperclip, MoreVertical, Edit2, Trash2, Pin, Heart, ThumbsUp, ThumbsDown, Smile, X, Menu, AlertCircle, WifiOff } from 'lucide-react';
+import { Video, VideoOff, Mic, MicOff, PhoneOff, MessageSquare, Users, Monitor, Copy, Check, MonitorOff, Send, MoreVertical, Edit2, Trash2, Pin, Heart, ThumbsUp, ThumbsDown, Smile, X, Menu, AlertCircle, WifiOff } from 'lucide-react';
 import io from 'socket.io-client';
 import './App.css';
 
@@ -24,7 +24,6 @@ export default function VideoConferenceApp() {
   const [iceConfig, setIceConfig] = useState(null);
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editingText, setEditingText] = useState('');
-  const [selectedFile, setSelectedFile] = useState(null);
   const [showMessageMenu, setShowMessageMenu] = useState(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(null);
   const [pinnedMessages, setPinnedMessages] = useState([]);
@@ -43,7 +42,6 @@ export default function VideoConferenceApp() {
   const localVideoRef = useRef(null);
   const localStreamRef = useRef(null);
   const chatMessagesEndRef = useRef(null);
-  const fileInputRef = useRef(null);
   const messageMenuRefs = useRef({});
   const messageInputRef = useRef(null);
 
@@ -905,16 +903,15 @@ export default function VideoConferenceApp() {
         socketRef.current.disconnect();
       }
       
-      // Cleanup all peer connections
-      Object.keys(peerConnectionsRef.current).forEach(cleanupPeerConnection);
+      // Cleanup all peer connections (capture current value)
+      const currentConnections = peerConnectionsRef.current;
+      Object.keys(currentConnections).forEach(cleanupPeerConnection);
     };
-  }, []);
+  }, [createPeerConnection, handleAnswer, handleOffer]);
 
   // ============ TURN CONFIGURATION FETCH ============
   useEffect(() => {
     const fetchTurnCredentials = async () => {
-      if (isFetchingTurn) return;
-      
       setIsFetchingTurn(true);
       try {
         const response = await fetch(`${SOCKET_SERVER_URL}/api/turn-credentials`, {
@@ -1328,7 +1325,7 @@ export default function VideoConferenceApp() {
                       {hasConnectionProblem && <WifiOff size={16} className="connection-problem-icon" />}
                     </div>
                   </div>
-                  {(!stream || videoDisabled) && (
+                  {(!hasVideo || videoDisabled) && (
                     <div className="video-off-placeholder">
                       <div className="avatar-placeholder">
                         {participant.name.charAt(0).toUpperCase()}
