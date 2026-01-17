@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Video, VideoOff, Mic, MicOff, PhoneOff, MessageSquare, Users, Monitor, Copy, Check, MonitorOff, Send, MoreVertical, Edit2, Trash2, Pin, Heart, ThumbsUp, ThumbsDown, Smile, X, Menu, AlertCircle, WifiOff } from 'lucide-react';
+import { Video, VideoOff, Mic, MicOff, PhoneOff, MessageSquare, Users, Monitor, Copy, Check, MonitorOff, Send, MoreVertical, Edit2, Trash2, Pin, Heart, ThumbsUp, ThumbsDown, Smile, X, Menu, AlertCircle } from 'lucide-react';
 import io from 'socket.io-client';
 import './App.css';
 
@@ -35,8 +35,7 @@ export default function VideoConferenceApp() {
   const [mediaState, setMediaState] = useState(null);
   const [showMediaPlayer, setShowMediaPlayer] = useState(false);
   const [isFetchingTurn, setIsFetchingTurn] = useState(false);
-  const [connectionProblems, setConnectionProblems] = useState({}); // { peerId: true/false }
-  const mediaPlayerRef = useRef(null);
+  const [connectionProblems, setConnectionProblems] = useState({});
 
   const socketRef = useRef(null);
   const localVideoRef = useRef(null);
@@ -44,35 +43,29 @@ export default function VideoConferenceApp() {
   const chatMessagesEndRef = useRef(null);
   const messageMenuRefs = useRef({});
   const messageInputRef = useRef(null);
+  const mediaPlayerRef = useRef(null);
 
   // ============ STRUCTURE DE DONNÉES POUR PERFECT NEGOTIATION ============
-  const peerConnectionsRef = useRef({}); // { peerId: RTCPeerConnection }
+  const peerConnectionsRef = useRef({});
   
   // SENDER RÉFÉRENCE - STOCKAGE DES SENDERS
-  const videoSendersRef = useRef({}); // { peerId: RTCRtpSender }
-  const audioSendersRef = useRef({}); // { peerId: RTCRtpSender }
+  const videoSendersRef = useRef({});
+  const audioSendersRef = useRef({});
   
   // Perfect Negotiation tracking (MDN standard)
-  const negotiationStateRef = useRef({}); // {
-  //   [peerId]: {
-  //     makingOffer: boolean,
-  //     ignoreOffer: boolean,
-  //     isPolite: boolean,
-  //     isSettingRemoteAnswerPending: boolean
-  //   }
-  // }
+  const negotiationStateRef = useRef({});
   
   // Original camera track storage for screen sharing
-  const originalVideoTracksRef = useRef({}); // { peerId: MediaStreamTrack }
+  const originalVideoTracksRef = useRef({});
   
   // ICE candidates queue
-  const iceCandidatesQueueRef = useRef({}); // { peerId: RTCIceCandidate[] }
+  const iceCandidatesQueueRef = useRef({});
   
   // Screen sharing state
   const screenStreamRef = useRef(null);
   
   // ICE restart attempts tracking
-  const iceRestartAttemptsRef = useRef({}); // { peerId: number }
+  const iceRestartAttemptsRef = useRef({});
   
   const emojis = ['❤️', '👍', '👎', '😂', '😮', '😢', '🎉'];
 
@@ -81,7 +74,7 @@ export default function VideoConferenceApp() {
     if (iceConfig && iceConfig.iceServers) {
       return {
         iceServers: iceConfig.iceServers,
-        bundlePolicy: "max-bundle", // FORCE bundle (audio+video+screen même port)
+        bundlePolicy: "max-bundle",
         rtcpMuxPolicy: "require",
         iceTransportPolicy: "all",
         iceCandidatePoolSize: 10
@@ -93,7 +86,7 @@ export default function VideoConferenceApp() {
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' }
       ],
-      bundlePolicy: "max-bundle", // FORCE bundle (audio+video+screen même port)
+      bundlePolicy: "max-bundle",
       rtcpMuxPolicy: "require",
       iceTransportPolicy: "all",
       iceCandidatePoolSize: 10
@@ -101,7 +94,7 @@ export default function VideoConferenceApp() {
   };
 
   // ============ PERFECT NEGOTIATION: CREATE PEER CONNECTION ============
-  const createPeerConnection = (peerId, isPolite = false) => {
+  const createPeerConnection = React.useCallback((peerId, isPolite = false) => {
     console.log(`🔗 Création PeerConnection pour ${peerId} (polite: ${isPolite})`);
     
     // Cleanup existing connection
@@ -189,18 +182,13 @@ export default function VideoConferenceApp() {
       const state = pc.iceConnectionState;
       console.log(`🔌 ICE state pour ${peerId}: ${state}`);
       
-      // Gestion des problèmes de connexion
       if (state === "disconnected") {
         console.warn(`⚠️ Déconnexion ICE détectée pour ${peerId} (transitoire)`);
-        // Attendre avant de marquer comme problème - peut être temporaire (screen sharing, etc)
-        // Ne pas marquer comme problème immédiatement
       } else if (state === "failed") {
         console.warn(`⚠️ Problème ICE pour ${peerId}: ${state}`);
         
-        // Marquer le participant comme ayant des problèmes de connexion
         setConnectionProblems(prev => ({ ...prev, [peerId]: true }));
         
-        // Premier restart automatique
         if (iceRestartAttemptsRef.current[peerId] < 1) {
           iceRestartAttemptsRef.current[peerId]++;
           setTimeout(() => {
@@ -210,16 +198,13 @@ export default function VideoConferenceApp() {
             }
           }, 1000);
         } else {
-          // Après le premier échec, on affiche juste le bouton de réparation
           console.log(`⚠️ ICE failed pour ${peerId} - bouton de réparation affiché`);
         }
       } else if (state === "connected" || state === "completed") {
-        // Connexion rétablie
         console.log(`✅ Connexion ICE établie avec ${peerId}`);
         setConnectionProblems(prev => ({ ...prev, [peerId]: false }));
-        iceRestartAttemptsRef.current[peerId] = 0; // Reset attempts
+        iceRestartAttemptsRef.current[peerId] = 0;
       } else if (state === "checking") {
-        // Connexion en cours - possible rétablissement après disconnected
         console.log(`🔍 ICE checking pour ${peerId}`);
       }
     };
@@ -233,17 +218,14 @@ export default function VideoConferenceApp() {
     };
     
     // ============ TRACK MANAGEMENT ============
-    // Add local tracks if we have them
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => {
         try {
           if (track.kind === "video") {
-            // STOCKER LE SENDER VIDEO
             const sender = pc.addTrack(track, localStreamRef.current);
             videoSendersRef.current[peerId] = sender;
             console.log(`🎥 Video track ajouté à ${peerId} (sender stocké)`);
           } else if (track.kind === "audio") {
-            // STOCKER LE SENDER AUDIO
             const sender = pc.addTrack(track, localStreamRef.current);
             audioSendersRef.current[peerId] = sender;
             console.log(`🎤 Audio track ajouté à ${peerId} (sender stocké)`);
@@ -258,12 +240,10 @@ export default function VideoConferenceApp() {
     pc.ontrack = (event) => {
       console.log(`📹 Track reçu de ${peerId}:`, event.track.kind);
       
-      // Create or update remote stream
       setRemoteStreams(prev => {
         const existingStream = prev[peerId];
         
         if (existingStream) {
-          // Check if track already exists
           const existingTrack = existingStream.getTracks().find(t => t.id === event.track.id);
           if (!existingTrack) {
             existingStream.addTrack(event.track);
@@ -271,7 +251,6 @@ export default function VideoConferenceApp() {
           }
           return { ...prev, [peerId]: existingStream };
         } else {
-          // Create new stream
           const newStream = event.streams[0] || new MediaStream([event.track]);
           console.log(`✅ Nouveau stream créé pour ${peerId}`);
           return { ...prev, [peerId]: newStream };
@@ -290,16 +269,15 @@ export default function VideoConferenceApp() {
       }
     };
     
-    // ============ ICE CANDIDATE ERROR ============
     pc.onicecandidateerror = (event) => {
       console.warn(`⚠️ ICE candidate error pour ${peerId}:`, event.errorCode, event.errorText);
     };
     
     return pc;
-  };
+  }, [iceConfig]);
 
   // ============ ICE RESTART ============
-  const restartIce = async (peerId) => {
+  const restartIce = React.useCallback(async (peerId) => {
     const pc = peerConnectionsRef.current[peerId];
     if (!pc) return;
     
@@ -309,7 +287,6 @@ export default function VideoConferenceApp() {
     try {
       console.log(`🔄 ICE restart manuel pour ${peerId}`);
       
-      // Only restart if we're stable and not already making an offer
       if (pc.signalingState === "stable" && !state.makingOffer) {
         state.makingOffer = true;
         const offer = await pc.createOffer({ iceRestart: true });
@@ -329,32 +306,16 @@ export default function VideoConferenceApp() {
     } finally {
       state.makingOffer = false;
     }
-  };
+  }, []);
 
-  // ============ MANUAL CONNECTION REPAIR ============
-  const repairConnection = (peerId) => {
-    console.log(`🔧 Réparation manuelle de la connexion pour ${peerId}`);
-    restartIce(peerId);
-    
-    // Reset attempts to allow automatic restart if needed again
-    iceRestartAttemptsRef.current[peerId] = 0;
-    setConnectionProblems(prev => ({ ...prev, [peerId]: false }));
-    
-    setNotification({
-      message: `Tentative de réparation de la connexion avec ${participants.find(p => p.id === peerId)?.name || 'le participant'}`,
-      type: 'info',
-      timestamp: Date.now()
-    });
-  };
-
-  // ============ PERFECT NEGOTIATION: HANDLE OFFER ============
-  const handleOffer = async (peerId, remoteOffer) => {
+  // ============ HANDLE OFFER ============
+  const handleOffer = React.useCallback(async (peerId, remoteOffer) => {
     console.log(`📨 Traitement offer de ${peerId}`);
     
     const pc = peerConnectionsRef.current[peerId];
     if (!pc) {
       console.warn(`⚠️ Aucun PeerConnection pour ${peerId}, création...`);
-      createPeerConnection(peerId, true); // Receiver is polite
+      createPeerConnection(peerId, true);
       return;
     }
     
@@ -365,7 +326,6 @@ export default function VideoConferenceApp() {
     }
     
     try {
-      // ============ PERFECT NEGOTIATION: OFFER COLLISION DETECTION ============
       const offerCollision = state.makingOffer || pc.signalingState !== "stable";
       
       state.ignoreOffer = !state.isPolite && offerCollision;
@@ -374,7 +334,6 @@ export default function VideoConferenceApp() {
         return;
       }
       
-      // ============ ROLLBACK IF POLITE PEER ============
       if (state.isPolite && offerCollision) {
         console.log(`✅ Peer poli ${peerId}: rollback local description`);
         await Promise.all([
@@ -383,10 +342,8 @@ export default function VideoConferenceApp() {
         ]);
         console.log(`✅ remoteDescription défini pour ${peerId}`);
         
-        // ============ FLUSH QUEUED ICE CANDIDATES ============
         await flushIceCandidates(peerId, pc);
         
-        // ============ CREATE AND SEND ANSWER AFTER ROLLBACK ============
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         
@@ -398,16 +355,13 @@ export default function VideoConferenceApp() {
         console.log(`📤 Answer envoyé après rollback pour ${peerId}`);
         return;
       } else {
-        // Normal offer processing (impolite or no collision)
         await pc.setRemoteDescription(new RTCSessionDescription(remoteOffer));
       }
       
       console.log(`✅ remoteDescription défini pour ${peerId}`);
       
-      // ============ FLUSH QUEUED ICE CANDIDATES ============
       await flushIceCandidates(peerId, pc);
       
-      // ============ CREATE AND SEND ANSWER ============
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       
@@ -421,10 +375,10 @@ export default function VideoConferenceApp() {
     } catch (err) {
       console.error(`❌ Erreur traitement offer de ${peerId}:`, err);
     }
-  };
+  }, [createPeerConnection]);
 
-  // ============ PERFECT NEGOTIATION: HANDLE ANSWER ============
-  const handleAnswer = async (peerId, remoteAnswer) => {
+  // ============ HANDLE ANSWER ============
+  const handleAnswer = React.useCallback(async (peerId, remoteAnswer) => {
     console.log(`📨 Traitement answer de ${peerId}`);
     
     const pc = peerConnectionsRef.current[peerId];
@@ -440,9 +394,6 @@ export default function VideoConferenceApp() {
     }
     
     try {
-      // ============ PERFECT NEGOTIATION: ANSWER VALIDATION ============
-      // Accept answer if we're in "have-local-offer" state (impolite path)
-      // OR in "have-remote-offer" state (polite path after rollback)
       if (pc.signalingState !== "have-local-offer" && pc.signalingState !== "have-remote-offer") {
         console.warn(`⚠️ Answer ignorée: signalingState = ${pc.signalingState}`);
         return;
@@ -454,23 +405,21 @@ export default function VideoConferenceApp() {
       
       console.log(`✅ Answer acceptée pour ${peerId}`);
       
-      // ============ FLUSH QUEUED ICE CANDIDATES ============
       await flushIceCandidates(peerId, pc);
       
     } catch (err) {
       console.error(`❌ Erreur traitement answer de ${peerId}:`, err);
       state.isSettingRemoteAnswerPending = false;
     }
-  };
+  }, []);
 
   // ============ ICE CANDIDATE HANDLING ============
-  const handleIceCandidate = async (peerId, candidate) => {
+  const handleIceCandidate = React.useCallback(async (peerId, candidate) => {
     console.log(`🧊 Traitement ICE candidate de ${peerId}`);
     
     const pc = peerConnectionsRef.current[peerId];
     if (!pc) {
       console.warn(`⚠️ Aucun PeerConnection pour ${peerId}, queue ICE candidate`);
-      // Queue candidate for later
       if (!iceCandidatesQueueRef.current[peerId]) {
         iceCandidatesQueueRef.current[peerId] = [];
       }
@@ -479,12 +428,10 @@ export default function VideoConferenceApp() {
     }
     
     try {
-      // If remote description is set, add candidate immediately
       if (pc.remoteDescription) {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
         console.log(`✅ ICE candidate ajouté pour ${peerId}`);
       } else {
-        // Queue candidate until remote description is set
         console.log(`📥 ICE candidate mis en queue pour ${peerId}`);
         if (!iceCandidatesQueueRef.current[peerId]) {
           iceCandidatesQueueRef.current[peerId] = [];
@@ -494,10 +441,10 @@ export default function VideoConferenceApp() {
     } catch (err) {
       console.error(`❌ Erreur ajout ICE candidate pour ${peerId}:`, err);
     }
-  };
+  }, []);
 
   // ============ FLUSH QUEUED ICE CANDIDATES ============
-  const flushIceCandidates = async (peerId, pc) => {
+  const flushIceCandidates = React.useCallback(async (peerId, pc) => {
     const queue = iceCandidatesQueueRef.current[peerId];
     if (!queue || queue.length === 0) return;
     
@@ -513,16 +460,29 @@ export default function VideoConferenceApp() {
       }
     }
     
-    // Clear queue
     iceCandidatesQueueRef.current[peerId] = [];
-  };
+  }, []);
 
-  // ============ SCREEN SHARING: START (SINGLE PEER CONNECTION - ZERO SIGNALING) ============
-  const startScreenShare = async () => {
-    console.log('🖥️ Démarrage du partage d\'écran (ZERO SIGNALING)...');
+  // ============ MANUAL CONNECTION REPAIR ============
+  const repairConnection = React.useCallback((peerId) => {
+    console.log(`🔧 Réparation manuelle de la connexion pour ${peerId}`);
+    restartIce(peerId);
+    
+    iceRestartAttemptsRef.current[peerId] = 0;
+    setConnectionProblems(prev => ({ ...prev, [peerId]: false }));
+    
+    setNotification({
+      message: `Tentative de réparation de la connexion avec ${participants.find(p => p.id === peerId)?.name || 'le participant'}`,
+      type: 'info',
+      timestamp: Date.now()
+    });
+  }, [participants, restartIce]);
+
+  // ============ SCREEN SHARING ============
+  const startScreenShare = React.useCallback(async () => {
+    console.log('🖥️ Démarrage du partage d\'écran...');
     
     try {
-      // Get screen stream
       const screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: { 
           cursor: "always",
@@ -538,9 +498,7 @@ export default function VideoConferenceApp() {
         throw new Error("Aucun track vidéo dans le stream d'écran");
       }
       
-      // Stocker la piste vidéo originale pour chaque participant
       Object.keys(peerConnectionsRef.current).forEach(peerId => {
-        // Stocker la caméra originale si ce n'est pas déjà fait
         if (!originalVideoTracksRef.current[peerId]) {
           const originalTrack = localStreamRef.current?.getVideoTracks()[0];
           if (originalTrack) {
@@ -550,14 +508,12 @@ export default function VideoConferenceApp() {
         }
       });
       
-      // ============ PARTAGE D'ÉCRAN SANS NÉGOCIATION - ZERO SIGNALING ============
       const replacePromises = Object.entries(peerConnectionsRef.current).map(async ([peerId, pc]) => {
         const videoSender = videoSendersRef.current[peerId];
         if (videoSender) {
           try {
-            // Remplacer le track avec l'écran - PAS DE RENÉGOCIATION
             await videoSender.replaceTrack(screenTrack);
-            console.log(`🔄 Track écran remplacé pour ${peerId} (zero signaling)`);
+            console.log(`🔄 Track écran remplacé pour ${peerId}`);
           } catch (err) {
             console.error(`❌ Erreur remplacement track écran pour ${peerId}:`, err);
           }
@@ -567,15 +523,13 @@ export default function VideoConferenceApp() {
       await Promise.all(replacePromises);
       
       setIsScreenSharing(true);
-      console.log('✅ Partage d\'écran démarré (SINGLE PEER CONNECTION - ZERO SIGNALING)');
+      console.log('✅ Partage d\'écran démarré');
       
-      // Handle screen sharing stop by user
       screenTrack.onended = () => {
         console.log('🖥️ Partage d\'écran terminé par l\'utilisateur');
         stopScreenShare();
       };
       
-      // Notify other participants (pour l'UI seulement)
       socketRef.current.emit('screen-share-start', { roomId });
       
     } catch (err) {
@@ -584,10 +538,10 @@ export default function VideoConferenceApp() {
         alert('Impossible de partager l\'écran');
       }
     }
-  };
+  }, [roomId]);
 
-  // ============ SCREEN SHARING: STOP ============
-  const stopScreenShare = async () => {
+  // ============ STOP SCREEN SHARE ============
+  const stopScreenShare = React.useCallback(async () => {
     console.log('🖥️ Arrêt du partage d\'écran...');
     
     if (!screenStreamRef.current) {
@@ -595,26 +549,22 @@ export default function VideoConferenceApp() {
       return;
     }
     
-    // Stop screen track
     screenStreamRef.current.getTracks().forEach(track => track.stop());
     screenStreamRef.current = null;
     
-    // ============ RESTORER LA CAMÉRA ORIGINALE (ZERO SIGNALING) ============
     const restorePromises = Object.entries(peerConnectionsRef.current).map(async ([peerId, pc]) => {
       const videoSender = videoSendersRef.current[peerId];
       const originalTrack = originalVideoTracksRef.current[peerId];
       
       if (videoSender && originalTrack) {
         try {
-          // Restaurer la caméra originale - PAS DE RENÉGOCIATION
           await videoSender.replaceTrack(originalTrack);
-          console.log(`🔄 Caméra restaurée pour ${peerId} (zero signaling)`);
+          console.log(`🔄 Caméra restaurée pour ${peerId}`);
         } catch (err) {
           console.error(`❌ Erreur restauration caméra pour ${peerId}:`, err);
         }
       }
       
-      // Nettoyer le stockage
       delete originalVideoTracksRef.current[peerId];
     });
     
@@ -623,21 +573,20 @@ export default function VideoConferenceApp() {
     setIsScreenSharing(false);
     console.log('✅ Partage d\'écran arrêté');
     
-    // Notify other participants (pour l'UI seulement)
     socketRef.current.emit('screen-share-stop', { roomId });
-  };
+  }, [roomId]);
 
-  // ============ TOGGLE SCREEN SHARE (WRAPPER) ============
-  const toggleScreenShare = async () => {
+  // ============ TOGGLE SCREEN SHARE ============
+  const toggleScreenShare = React.useCallback(async () => {
     if (isScreenSharing) {
       stopScreenShare();
     } else {
       await startScreenShare();
     }
-  };
+  }, [isScreenSharing, startScreenShare, stopScreenShare]);
 
-  // ============ TOGGLE VIDEO/AUDIO (NO RENEGOTIATION) ============
-  const toggleVideo = () => {
+  // ============ TOGGLE VIDEO/AUDIO ============
+  const toggleVideo = React.useCallback(() => {
     if (localStreamRef.current) {
       const videoTrack = localStreamRef.current.getVideoTracks()[0];
       if (videoTrack) {
@@ -645,16 +594,15 @@ export default function VideoConferenceApp() {
         setIsVideoOn(videoTrack.enabled);
         console.log(`🎥 Vidéo ${videoTrack.enabled ? 'activée' : 'désactivée'}`);
         
-        // Notify others
         socketRef.current.emit('toggle-video', { 
           roomId, 
           isVideoOn: videoTrack.enabled 
         });
       }
     }
-  };
+  }, [roomId]);
 
-  const toggleAudio = () => {
+  const toggleAudio = React.useCallback(() => {
     if (localStreamRef.current) {
       const audioTrack = localStreamRef.current.getAudioTracks()[0];
       if (audioTrack) {
@@ -662,17 +610,16 @@ export default function VideoConferenceApp() {
         setIsAudioOn(audioTrack.enabled);
         console.log(`🎤 Audio ${audioTrack.enabled ? 'activé' : 'désactivé'}`);
         
-        // Notify others
         socketRef.current.emit('toggle-audio', { 
           roomId, 
           isAudioOn: audioTrack.enabled 
         });
       }
     }
-  };
+  }, [roomId]);
 
   // ============ CLEANUP PEER CONNECTION ============
-  const cleanupPeerConnection = (peerId) => {
+  const cleanupPeerConnection = React.useCallback((peerId) => {
     console.log(`🧹 Nettoyage PeerConnection ${peerId}`);
     
     const pc = peerConnectionsRef.current[peerId];
@@ -681,33 +628,28 @@ export default function VideoConferenceApp() {
       delete peerConnectionsRef.current[peerId];
     }
     
-    // Nettoyer les senders stockés
     delete videoSendersRef.current[peerId];
     delete audioSendersRef.current[peerId];
-    
-    // Nettoyer les états
     delete negotiationStateRef.current[peerId];
     delete iceCandidatesQueueRef.current[peerId];
     delete originalVideoTracksRef.current[peerId];
     delete iceRestartAttemptsRef.current[peerId];
     
-    // Remove from connection problems
     setConnectionProblems(prev => {
       const updated = { ...prev };
       delete updated[peerId];
       return updated;
     });
     
-    // Remove from remote streams
     setRemoteStreams(prev => {
       const updated = { ...prev };
       delete updated[peerId];
       return updated;
     });
-  };
+  }, []);
 
   // ============ INITIALIZE LOCAL STREAM ============
-  const startLocalStream = async () => {
+  const startLocalStream = React.useCallback(async () => {
     try {
       const constraints = {
         video: {
@@ -737,10 +679,10 @@ export default function VideoConferenceApp() {
       alert('Impossible d\'accéder à la caméra/micro');
       return false;
     }
-  };
+  }, []);
 
   // ============ JOIN ROOM ============
-  const joinRoom = async () => {
+  const joinRoom = React.useCallback(async () => {
     if (!userName.trim() || !roomId.trim()) {
       alert('Veuillez entrer votre nom et un ID de salle');
       return;
@@ -752,37 +694,31 @@ export default function VideoConferenceApp() {
     setIsInRoom(true);
     setHasJoinedRoom(true);
     
-    // Add local participant
     setParticipants([{ 
       id: socketRef.current?.id || 'local', 
       name: userName, 
       isLocal: true 
     }]);
     
-    // Join room via signaling
     socketRef.current.emit('join-room', { roomId, userName });
-  };
+  }, [userName, roomId, startLocalStream]);
 
   // ============ LEAVE ROOM ============
-  const leaveRoom = () => {
+  const leaveRoom = React.useCallback(() => {
     console.log('🚪 Quitter la salle...');
     
-    // Cleanup all peer connections
     Object.keys(peerConnectionsRef.current).forEach(cleanupPeerConnection);
     
-    // Stop local streams
     [localStreamRef.current, screenStreamRef.current].forEach(stream => {
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
       }
     });
     
-    // Leave signaling room
     if (socketRef.current) {
       socketRef.current.emit('leave-room', { roomId });
     }
     
-    // Reset state
     setIsInRoom(false);
     setParticipants([]);
     setRemoteStreams({});
@@ -791,7 +727,7 @@ export default function VideoConferenceApp() {
     setShowChat(false);
     setShowParticipants(false);
     setConnectionProblems({});
-  };
+  }, [roomId, cleanupPeerConnection]);
 
   // ============ SOCKET.IO EVENT HANDLERS ============
   useEffect(() => {
@@ -813,18 +749,15 @@ export default function VideoConferenceApp() {
       setConnectionStatus('Déconnecté');
     });
 
-    // ============ SIGNALING EVENTS ============
     socketRef.current.on('existing-users', (users) => {
       console.log('👥 Utilisateurs existants:', users);
       users.forEach(user => {
-        // Add participant
         setParticipants(prev => [...prev, { 
           id: user.id, 
           name: user.name, 
           isLocal: false 
         }]);
         
-        // Create peer connection (initiator = polite)
         createPeerConnection(user.id, true);
       });
     });
@@ -832,28 +765,22 @@ export default function VideoConferenceApp() {
     socketRef.current.on('user-joined', (user) => {
       console.log('👤 Nouvel utilisateur:', user);
       
-      // Add participant
       setParticipants(prev => [...prev, { 
         id: user.id, 
         name: user.name, 
         isLocal: false 
       }]);
       
-      // Create peer connection (we are polite to new users since they just joined)
       createPeerConnection(user.id, true);
     });
 
     socketRef.current.on('user-left', (user) => {
       console.log('👋 Utilisateur parti:', user);
       
-      // Remove participant
       setParticipants(prev => prev.filter(p => p.id !== user.id));
-      
-      // Cleanup peer connection
       cleanupPeerConnection(user.id);
     });
 
-    // ============ WEBRTC SIGNALING ============
     socketRef.current.on('offer', ({ from, offer }) => {
       console.log('📨 Offer reçue de:', from);
       handleOffer(from, offer);
@@ -869,7 +796,6 @@ export default function VideoConferenceApp() {
       handleIceCandidate(from, candidate);
     });
 
-    // ============ OTHER EVENTS ============
     socketRef.current.on('chat-message', (message) => {
       setChatMessages(prev => [...prev, message]);
     });
@@ -897,17 +823,15 @@ export default function VideoConferenceApp() {
       }
     });
 
-    // Cleanup on unmount
     return () => {
       if (socketRef.current) {
         socketRef.current.disconnect();
       }
       
-      // Cleanup all peer connections (capture current value)
       const currentConnections = peerConnectionsRef.current;
       Object.keys(currentConnections).forEach(cleanupPeerConnection);
     };
-  }, [createPeerConnection, handleAnswer, handleOffer]);
+  }, [createPeerConnection, handleAnswer, handleOffer, handleIceCandidate, cleanupPeerConnection]);
 
   // ============ TURN CONFIGURATION FETCH ============
   useEffect(() => {
@@ -923,12 +847,9 @@ export default function VideoConferenceApp() {
         if (response.ok) {
           const data = await response.json();
           
-          // Optimize TURN servers
           const optimizedServers = [
-            // Google STUN (fast)
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            // TURN servers (max 2 for speed)
             ...(data.iceServers || []).slice(0, 2)
           ];
           
@@ -946,7 +867,7 @@ export default function VideoConferenceApp() {
   }, []);
 
   // ============ CHAT FUNCTIONS ============
-  const sendMessage = () => {
+  const sendMessage = React.useCallback(() => {
     const trimmedMessage = messageInput.trim();
     if (!trimmedMessage || !hasJoinedRoom || !socketRef.current?.connected) {
       return;
@@ -963,15 +884,15 @@ export default function VideoConferenceApp() {
     setTimeout(() => {
       messageInputRef.current?.focus();
     }, 100);
-  };
+  }, [messageInput, hasJoinedRoom, roomId]);
 
-  const editMessage = (messageId, currentText) => {
+  const editMessage = React.useCallback((messageId, currentText) => {
     setEditingMessageId(messageId);
     setEditingText(currentText);
     setShowMessageMenu(null);
-  };
+  }, []);
 
-  const saveEdit = (messageId) => {
+  const saveEdit = React.useCallback((messageId) => {
     if (editingText.trim()) {
       console.log('✏️ Édition du message:', messageId);
       socketRef.current.emit('edit-message', { 
@@ -982,56 +903,57 @@ export default function VideoConferenceApp() {
     }
     setEditingMessageId(null);
     setEditingText('');
-  };
+  }, [editingText, roomId]);
 
-  const deleteMessage = (messageId) => {
+  const deleteMessage = React.useCallback((messageId) => {
     if (window.confirm('Supprimer ce message ? Cette action est irréversible.')) {
       console.log('🗑️ Suppression du message:', messageId);
       socketRef.current.emit('delete-message', { roomId, messageId });
       setShowMessageMenu(null);
     }
-  };
+  }, [roomId]);
 
-  const reactToMessage = (messageId, reaction) => {
+  const reactToMessage = React.useCallback((messageId, reaction) => {
     console.log('😀 Réaction au message:', messageId, reaction);
     socketRef.current.emit('react-message', { roomId, messageId, reaction });
     setShowEmojiPicker(null);
     setShowMessageMenu(null);
-  };
+  }, [roomId]);
 
-  const pinMessage = (messageId) => {
+  const pinMessage = React.useCallback((messageId) => {
     console.log('📌 Épinglage du message:', messageId);
     socketRef.current.emit('pin-message', { roomId, messageId });
     setShowMessageMenu(null);
-  };
+  }, [roomId]);
 
   // ============ UI HELPERS ============
-  const generateRoomId = () => {
+  const generateRoomId = React.useCallback(() => {
     return Math.random().toString(36).substring(2, 10).toUpperCase();
-  };
+  }, []);
 
-  const copyRoomId = () => {
+  const copyRoomId = React.useCallback(() => {
     navigator.clipboard.writeText(roomId);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  };
+  }, [roomId]);
 
-  const formatFileSize = (bytes) => {
+  const formatFileSize = React.useCallback((bytes) => {
     if (!bytes) return '';
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  };
+  }, []);
 
-  const getFileIcon = (fileType) => {
-    if (fileType?.startsWith('image/')) return '🖼️';
-    if (fileType?.startsWith('audio/')) return '🎵';
-    if (fileType?.startsWith('video/')) return '🎥';
+  const getFileIcon = React.useCallback((fileType) => {
+    if (!fileType) return '📎';
+    if (fileType.startsWith('image/')) return '🖼️';
+    if (fileType.startsWith('audio/')) return '🎵';
+    if (fileType.startsWith('video/')) return '🎥';
     if (fileType === 'application/pdf') return '📄';
     return '📎';
-  };
+  }, []);
 
-  const renderMessageMenu = (messageId, isOwnMessage, isPinned) => (
+  const renderMessageMenu = React.useCallback((messageId, isOwnMessage, isPinned) => (
     <div className="message-menu-dropdown">
       {!isOwnMessage && (
         <>
@@ -1061,7 +983,7 @@ export default function VideoConferenceApp() {
         </>
       )}
     </div>
-  );
+  ), [chatMessages, deleteMessage, editMessage, pinMessage, reactToMessage]);
 
   // ============ SCROLL TO BOTTOM ============
   useEffect(() => {
@@ -1085,10 +1007,9 @@ export default function VideoConferenceApp() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showMessageMenu, showEmojiPicker]);
 
-  // ============ FOCUS CHAT INPUT ON MOBILE ============
+  // ============ FOCUS CHAT INPUT ============
   useEffect(() => {
     if (showChat && activeTab === 'chat' && messageInputRef.current) {
-      // Small delay to ensure the input is rendered
       setTimeout(() => {
         messageInputRef.current?.focus();
       }, 100);
@@ -1226,10 +1147,10 @@ export default function VideoConferenceApp() {
 
       <div className="room-content">
         <div className="videos-section">
-          {pinnedMessages.length > 0 && (
+          {pinnedMessages.length > 0 && pinnedMessages[0] && (
             <div className="pinned-messages-banner">
               <Pin size={16} />
-              <span>{pinnedMessages[pinnedMessages.length - 1].text}</span>
+              <span>{pinnedMessages[0].text}</span>
             </div>
           )}
 
@@ -1322,7 +1243,7 @@ export default function VideoConferenceApp() {
                     <span className="participant-name">{participant.name}</span>
                     <div className="video-indicators">
                       {videoDisabled && <VideoOff size={16} />}
-                      {hasConnectionProblem && <WifiOff size={16} className="connection-problem-icon" />}
+                      {hasConnectionProblem && <AlertCircle size={16} className="connection-problem-icon" />}
                     </div>
                   </div>
                   {(!hasVideo || videoDisabled) && (
@@ -1333,7 +1254,6 @@ export default function VideoConferenceApp() {
                     </div>
                   )}
                   
-                  {/* BOUTON DE RÉPARATION DE CONNEXION */}
                   {hasConnectionProblem && (
                     <div className="connection-repair-overlay">
                       <div className="connection-problem-alert">
@@ -1343,7 +1263,7 @@ export default function VideoConferenceApp() {
                           onClick={() => repairConnection(participant.id)}
                           className="repair-connection-btn"
                         >
-                          <WifiOff size={16} /> Réparer
+                          <AlertCircle size={16} /> Réparer
                         </button>
                       </div>
                     </div>
@@ -1526,7 +1446,6 @@ export default function VideoConferenceApp() {
                         enterKeyHint="send"
                         autoFocus={showChat && activeTab === 'chat'}
                         onFocus={() => {
-                          // Scroll to bottom when focusing on mobile
                           setTimeout(() => {
                             chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
                           }, 300);
@@ -1553,7 +1472,7 @@ export default function VideoConferenceApp() {
                         {participant.isCreator && <span className="creator-badge">👑 Créateur</span>}
                         {connectionProblems[participant.id] && (
                           <span className="connection-problem-badge">
-                            <WifiOff size={12} /> Problème de connexion
+                            <AlertCircle size={12} /> Problème de connexion
                           </span>
                         )}
                       </div>
@@ -1579,7 +1498,7 @@ export default function VideoConferenceApp() {
                               className="control-participant-btn repair-btn"
                               title="Réparer la connexion"
                             >
-                              <WifiOff size={16} />
+                              <AlertCircle size={16} />
                             </button>
                           )}
                         </div>
